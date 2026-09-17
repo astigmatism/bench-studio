@@ -1,0 +1,27 @@
+{
+  "categories": [],
+  "phases": [
+    "prefill"
+  ],
+  "config": {
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "top_k": null,
+    "seed": 42,
+    "greedy": false,
+    "unique_nonce": true,
+    "timeout_s": 600,
+    "warmup": 3,
+    "runs_per_category": 20,
+    "run_single_stream": true,
+    "run_prefill": false,
+    "run_concurrency": false,
+    "prefill_depths": [
+      2000,
+      8000
+    ],
+    "prefill_warmup": 1,
+    "prefill_runs": 2,
+    "prefill_max_tokens": 16
+  }
+}

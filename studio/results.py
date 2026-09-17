@@ -1,0 +1,192 @@
+import json
+import statistics
+from pathlib import Path
+from betterbench.report import combined_score, single_rows, prefill_rows
+from common import read_json
+from . import config, db
+
+
+def import_legacy():
+    for path in (config.DATA / "runs").glob("*/manifest.json"):
+        try:
+            m = read_json(path)
+            if not m.get("id") or db.get_run(m["id"]):
+                continue
+            m["legacy"] = True
+            if m["status"] in db.ACTIVE:
+                m.update(
+                    status="interrupted",
+                    error="Imported without a live Studio worker; raw artifacts retained",
+                )
+            m["family"] = "speed"
+            with db.transaction() as c:
+                db.put_run(c, m)
+        except (ValueError, OSError, KeyError):
+            continue
+
+
+def summarize(m):
+    result = {}
+    root = config.DATA / "runs" / m["id"]
+    for target in m.get("requested_targets", []):
+        item = {
+            "target": target,
+            "canonical": m.get("resolved", {}).get(target, {}).get("canonical", target),
+            "score": None,
+            "unit": "",
+            "metrics": [],
+            "tasks": [],
+        }
+        try:
+            if (root / target / "result.json").exists():
+                item.update(read_json(root / target / "result.json"))
+            elif (root / target / "decode.json").exists():
+                data = read_json(root / target / "decode.json")
+                rows = single_rows(data)
+                score = combined_score(data, rows)
+                item.update(
+                    score=score.get("decode") if score else None,
+                    unit="tok/s",
+                    metric="decode_tps",
+                    count=sum(r["runs"] for r in rows),
+                    metrics=rows,
+                )
+                item["tasks"] = [
+                    {
+                        "id": f"{cat}/{i+1}",
+                        "status": "passed" if r.get("ok") else "failed",
+                        "duration": r.get("elapsed_s"),
+                        "ttft_ms": r.get("ttft_ms"),
+                        "decode_tps": r.get("decode_tps"),
+                        "finish_reason": r.get("finish_reason"),
+                        "completion_tokens": r.get("completion_tokens"),
+                    }
+                    for cat, rr in data.get("single_stream", {}).items()
+                    for i, r in enumerate(rr)
+                ]
+            elif (root / target / "prefill.json").exists():
+                data = read_json(root / target / "prefill.json")
+                rows = prefill_rows(data)
+                values = [r["pp_med"] for r in rows if not r.get("skipped")]
+                item.update(
+                    score=statistics.median(values) if values else None,
+                    unit="prompt tok/s",
+                    metric="prefill_tps",
+                    metrics=rows,
+                    count=sum(r.get("pp_n", 0) for r in rows),
+                    score_label="Median of depth medians",
+                )
+        except (ValueError, KeyError, TypeError, OSError) as e:
+            item["summary_error"] = str(e)
+        if m["status"] != "completed":
+            item["score"] = None
+        result[target] = item
+    return result
+
+
+def enrich(m):
+    m = dict(m)
+    m["summary"] = summarize(m)
+    root = config.DATA / "runs" / m["id"]
+    m["artifacts"] = (
+        [
+            str(p.relative_to(root))
+            for p in root.rglob("*")
+            if p.is_file()
+            and not p.is_symlink()
+            and p.stat().st_size < 100 * 1024 * 1024
+        ][:2000]
+        if root.exists()
+        else []
+    )
+    for t, s in m["summary"].items():
+        slot = f'{m.get("profile")}:{m.get("profile_spec",{}).get("size","standard")}:{m.get("mode","sequential")}:{t}'
+        with db.connect() as c:
+            r = c.execute("SELECT * FROM baselines WHERE slot=?", (slot,)).fetchone()
+        if r:
+            base = db.get_run(r["run_id"])
+            if base and base["status"] == "completed":
+                bs = summarize(base).get(r["target"], {})
+                s["baseline"] = {
+                    "run_id": r["run_id"],
+                    "target": r["target"],
+                    "score": bs.get("score"),
+                }
+                if (
+                    s.get("score") is not None
+                    and bs.get("score") is not None
+                    and s.get("metric") == bs.get("metric")
+                    and comparable(m, base)
+                ):
+                    s["delta"] = (
+                        s["score"] - bs["score"]
+                        if s["unit"] == "%"
+                        else (
+                            (s["score"] / bs["score"] - 1) * 100
+                            if bs["score"]
+                            else None
+                        )
+                    )
+                    s["delta_unit"] = "pp" if s["unit"] == "%" else "%"
+    return m
+
+
+def workload(m):
+    p = m.get("profile_spec", {})
+    return (
+        m.get("family", "speed"),
+        m.get("profile"),
+        p.get("size", "standard"),
+        p.get("engine"),
+        p.get("version"),
+        m.get("mode", "sequential"),
+        p.get("task_manifest_hash"),
+    )
+
+
+def comparable(a, b):
+    return workload(a) == workload(b)
+
+
+def compare(a, b, ta, tb):
+    if a["status"] != "completed" or b["status"] != "completed":
+        raise ValueError("Only completed runs can be compared")
+    sa, sb = summarize(a).get(ta), summarize(b).get(tb)
+    if not sa or not sb or sa.get("metric") != sb.get("metric") or not comparable(a, b):
+        raise ValueError(
+            "Select the same profile, size, engine, and execution mode; metrics must match"
+        )
+    aa = a.get("resolved", {}).get(ta, {})
+    bb = b.get("resolved", {}).get(tb, {})
+    fields = {
+        "model": (aa.get("canonical"), bb.get("canonical")),
+        "context": (aa.get("context"), bb.get("context")),
+        "runtime revision": (aa.get("runtime_revision"), bb.get("runtime_revision")),
+        "GPU pair": (
+            aa.get("service", {}).get("gpu_names"),
+            bb.get("service", {}).get("gpu_names"),
+        ),
+        "engine image": (
+            aa.get("service", {}).get("image_id"),
+            bb.get("service", {}).get("image_id"),
+        ),
+    }
+    for k in set(a.get("profile_spec", {}).get("parameters", {})) | set(
+        b.get("profile_spec", {}).get("parameters", {})
+    ):
+        fields[k] = (
+            a.get("profile_spec", {}).get("parameters", {}).get(k),
+            b.get("profile_spec", {}).get("parameters", {}).get(k),
+        )
+    return {
+        "a": sa,
+        "b": sb,
+        "differences": [
+            {"field": k, "a": v[0], "b": v[1]}
+            for k, v in fields.items()
+            if v[0] != v[1]
+        ],
+        "warning": "Independent runs: descriptive differences, not evidence of causation.",
+        "a_run": a["id"],
+        "b_run": b["id"],
+    }

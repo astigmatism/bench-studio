@@ -1,0 +1,391 @@
+import copy, json, importlib.util
+from pathlib import Path
+import pytest
+from fastapi.testclient import TestClient
+from common import atomic_json, now, identity
+from studio import config, db, profiles, results, runner
+from studio.api import app
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA", tmp_path)
+    resolved = {
+        "alias": "daytime",
+        "canonical": "model-a",
+        "context": 163840,
+        "reserve": 1024,
+        "runtime_revision": "r1",
+        "runtime_profile": "day",
+        "metadata": {
+            "revision": "m1",
+            "quantization": "Q8",
+            "reasoning": {"efforts": {"off": "none", "low": "low"}},
+        },
+        "service": {
+            "id": "c1",
+            "image_id": "i1",
+            "container_name": "day",
+            "gpu_names": ["GPU A"],
+            "model": "model-a",
+        },
+    }
+    snap = {
+        "models": {"data": []},
+        "runtime": {"ready": True, "maintenance": {}, "services": []},
+    }
+    monkeypatch.setattr(
+        "studio.discovery.discover",
+        lambda: {
+            "models": [{"alias": "daytime", "available": True, "resolved": resolved}],
+            "runtime": snap["runtime"],
+            "snapshot": snap,
+        },
+    )
+    with TestClient(app) as c:
+        yield c, resolved, snap
+
+
+def launch(c, **kw):
+    return c.post(
+        "/api/runs",
+        json={
+            "targets": ["daytime"],
+            "profile": "smoke",
+            "idempotency_key": "test-request-0001",
+            **kw,
+        },
+    )
+
+
+def test_durable_idempotent_queue_and_cancel(client):
+    c, _, _ = client
+    a = launch(c)
+    assert a.status_code == 202
+    b = launch(c)
+    assert a.json()["id"] == b.json()["id"]
+    assert len(db.runs()) == 1
+    rid = a.json()["id"]
+    db.initialize()
+    assert db.get_run(rid)["status"] == "queued"
+    assert c.post(f"/api/runs/{rid}/cancel", json={}).json()["status"] == "cancelled"
+    assert (
+        c.post(f"/api/runs/{rid}/baseline", json={"target": "daytime"}).status_code
+        == 400
+    )
+
+
+def test_profile_validation_and_immutable_custom(client):
+    c, _, _ = client
+    assert launch(c, overrides={"top_k": 20}).status_code == 400
+    assert launch(c, overrides={"temperature": -1}).status_code == 400
+    assert launch(c, overrides={"max_tokens": 99999999}).status_code == 400
+    before = profiles.get("coding")
+    custom = c.post(
+        "/api/profiles",
+        json={
+            "profile": "coding",
+            "name": "Cold baseline",
+            "overrides": {"temperature": 0},
+        },
+    ).json()
+    assert custom["parameters"]["temperature"] == 0 and not custom["builtin"]
+    assert profiles.get("coding") == before
+
+
+def test_csrf_and_maintenance(client):
+    c, _, _ = client
+    assert (
+        c.post(
+            "/api/runs", json={}, headers={"Origin": "https://attacker.invalid"}
+        ).status_code
+        == 403
+    )
+    assert c.post("/api/runs", data="{}").status_code == 415
+    (config.DATA / ".maintenance").touch()
+    assert launch(c).status_code == 409
+
+
+def test_snapshot_and_queued_drift(client, monkeypatch):
+    c, resolved, snap = client
+    rid = launch(c).json()["id"]
+    after = copy.deepcopy(resolved)
+    after["context"] = 8192
+    monkeypatch.setattr(runner, "snapshot", lambda _: snap)
+    monkeypatch.setattr(runner, "resolve", lambda *_: after)
+    runner.cycle()
+    assert db.get_run(rid)["status"] == "blocked"
+    assert db.get_run(rid)["resolved"]["daytime"]["context"] == 163840
+
+
+def test_busy_queue_does_not_launch(client, monkeypatch):
+    c, resolved, snap = client
+    rid = launch(c).json()["id"]
+    monkeypatch.setattr(runner, "snapshot", lambda _: snap)
+    monkeypatch.setattr(runner, "resolve", lambda *_: resolved)
+
+    def busy(*args):
+        raise RuntimeError("Backend busy")
+
+    monkeypatch.setattr(runner, "require_idle", busy)
+    monkeypatch.setattr(
+        runner, "start", lambda *_: pytest.fail("Must not start busy benchmark")
+    )
+    runner.cycle()
+    assert db.get_run(rid)["status"] == "queued"
+    assert "busy" in db.get_run(rid)["progress"]
+
+
+def test_artifact_escape_rejected(client, tmp_path):
+    c, _, _ = client
+    rid = launch(c).json()["id"]
+    directory = config.DATA / "runs" / rid
+    directory.mkdir(parents=True)
+    (directory / "good.txt").write_text("hello")
+    (directory / "escape.txt").symlink_to("/etc/passwd")
+    assert c.get(f"/api/runs/{rid}/artifacts/good.txt").text == "hello"
+    assert c.get(f"/api/runs/{rid}/artifacts/escape.txt").status_code == 404
+
+
+def test_legacy_import_and_real_weighted_summary(client):
+    c, resolved, _ = client
+    rid = "legacy-result"
+    root = config.DATA / "runs" / rid / "daytime"
+    root.mkdir(parents=True)
+    m = {
+        "id": rid,
+        "created_at": now(),
+        "status": "completed",
+        "profile": "smoke",
+        "mode": "sequential",
+        "requested_targets": ["daytime"],
+        "resolved": {"daytime": resolved},
+    }
+    atomic_json(root.parent / "manifest.json", m)
+    rows = [
+        {
+            "ok": True,
+            "decode_tps": 20,
+            "ttft_ms": 100,
+            "completion_tokens": 100,
+            "n_chunks": 100,
+            "itl_ms": [50] * 99,
+        }
+        for _ in range(5)
+    ]
+    atomic_json(
+        root / "decode.json",
+        {"single_stream": {"code": rows}, "config": {"weights": {"code": 1}}},
+    )
+    results.import_legacy()
+    results.import_legacy()
+    stored = db.get_run(rid)
+    assert results.summarize(stored)["daytime"]["score"] == 20
+    stored["status"] = "interrupted"
+    assert results.summarize(stored)["daytime"]["score"] is None
+    assert len(db.runs()) == 1
+
+
+def test_incompatible_comparison(client):
+    c, _, _ = client
+    rid = launch(c).json()["id"]
+    a = db.get_run(rid)
+    b = copy.deepcopy(a)
+    a["status"] = b["status"] = "completed"
+    b["profile"] = "prefill"
+    with pytest.raises(ValueError):
+        results.compare(a, b, "daytime", "daytime")
+
+
+def test_cancel_ownership_guard(client, monkeypatch):
+    c, _, _ = client
+    m = launch(c).json()
+    m["workers"] = {"some-other-app": {}}
+    calls = []
+    monkeypatch.setattr(
+        runner,
+        "inspect",
+        lambda _: {"Config": {"Labels": {}}, "State": {"Running": True}},
+    )
+
+    class R:
+        stdout = ""
+
+    monkeypatch.setattr(
+        runner, "docker", lambda *args, **kw: (calls.append(args) or R())
+    )
+    runner.stop_owned(m)
+    assert not any(x[0] == "stop" for x in calls)
+
+
+def test_updater_rejects_dirty_before_network(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "updater", Path(__file__).parents[1] / "scripts/update.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    class P:
+        stdout = " M frontend/src/main.tsx"
+        returncode = 0
+
+    calls = []
+    monkeypatch.setattr(mod.shutil, "which", lambda x: "/bin/" + x)
+    monkeypatch.setattr(mod, "run", lambda *a, **k: (calls.append(a) or P()))
+    with pytest.raises(RuntimeError, match="dirty"):
+        mod.preflight()
+    assert calls == [("git", "status", "--porcelain")]
+
+
+def test_idempotency_survives_discovery_outage(client, monkeypatch):
+    c, _, _ = client
+    original = launch(c).json()
+    monkeypatch.setattr(
+        "studio.discovery.discover",
+        lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+    assert launch(c).json()["id"] == original["id"]
+
+
+def test_disappeared_worker_is_interrupted_without_replay(client, monkeypatch):
+    c, _, _ = client
+    m = launch(c).json()
+    m.update(status="running", workers={"owned-worker": {"role": "generate"}})
+    db.update_run(m)
+    monkeypatch.setattr(runner, "check_current", lambda m: None)
+    monkeypatch.setattr(runner, "inspect", lambda n: None)
+    monkeypatch.setattr(runner, "stop_owned", lambda m: None)
+    monkeypatch.setattr(
+        runner,
+        "create_worker",
+        lambda *a, **k: pytest.fail("Must never replay disappeared work"),
+    )
+    runner.cycle()
+    assert db.get_run(m["id"])["status"] == "interrupted"
+
+
+def test_running_worker_is_reconciled_without_replay(client, monkeypatch):
+    c, _, _ = client
+    m = launch(c).json()
+    m.update(status="running", workers={"owned-worker": {"role": "generate"}})
+    db.update_run(m)
+    monkeypatch.setattr(runner, "check_current", lambda m: None)
+    monkeypatch.setattr(
+        runner, "inspect", lambda n: {"State": {"Status": "running", "Running": True}}
+    )
+    monkeypatch.setattr(
+        runner,
+        "create_worker",
+        lambda *a, **k: pytest.fail("Must not replay surviving worker"),
+    )
+    runner.cycle()
+    assert db.get_run(m["id"])["status"] == "running"
+
+
+def test_quality_requires_output_budget_and_prefill_temperature_is_fixed(client):
+    c, _, _ = client
+    assert (
+        launch(
+            c, profile="coding-checks", size="quick", overrides={"max_tokens": None}
+        ).status_code
+        == 400
+    )
+    assert (
+        launch(c, profile="prefill", overrides={"temperature": 0.7}).status_code == 400
+    )
+
+
+def test_arbitrary_provider_names_are_safe_and_resolve():
+    from common import safe_target, resolve
+
+    name = "vendor/../model:70b"
+    target = safe_target(name)
+    assert "/" not in target and ":" not in target
+    snap = {
+        "runtime": {"services": [{"model": name, "healthy": True, "running": True}]},
+        "models": {
+            "data": [
+                {
+                    "id": name,
+                    "x_ollama_router": {
+                        "complete": True,
+                        "health": {"available": True},
+                        "context_window": 8192,
+                    },
+                }
+            ]
+        },
+    }
+    assert resolve(snap, target)["canonical"] == name
+
+
+def test_updater_failure_preserves_database_and_clears_maintenance(
+    client, monkeypatch, tmp_path
+):
+    import subprocess, sqlite3
+
+    c, _, _ = client
+    launch(c)
+    spec = importlib.util.spec_from_file_location(
+        "updater_failure", Path(__file__).parents[1] / "scripts/update.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    root = tmp_path / "deployment"
+    root.mkdir()
+    (root / "data").symlink_to(config.DATA, target_is_directory=True)
+    monkeypatch.setattr(mod, "ROOT", root)
+    monkeypatch.setattr(mod, "preflight", lambda: None)
+    calls = []
+
+    def run(*args, **kw):
+        calls.append(args)
+        if (
+            args[:4] == ("docker", "compose", "--profile", "images")
+            and args[-1] == "build"
+        ):
+            raise RuntimeError("build failed")
+        return subprocess.CompletedProcess(args, 0, stdout="abc123", stderr="")
+
+    monkeypatch.setattr(mod, "run", run)
+    with pytest.raises(RuntimeError, match="build failed"):
+        mod.deploy()
+    assert len(db.runs()) == 1 and not (config.DATA / ".maintenance").exists()
+    assert list((config.DATA / "backups").glob("*/studio.sqlite3"))
+    assert not any("up" in args or "down" in args or "prune" in args for args in calls)
+
+
+@pytest.mark.parametrize("failure", ["divergent", "health"])
+def test_updater_rejects_divergence_and_failed_health(
+    client, monkeypatch, tmp_path, failure
+):
+    import subprocess
+
+    c, _, _ = client
+    launch(c)
+    spec = importlib.util.spec_from_file_location(
+        "updater_" + failure, Path(__file__).parents[1] / "scripts/update.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    root = tmp_path / "deployment"
+    root.mkdir()
+    (root / "data").symlink_to(config.DATA, target_is_directory=True)
+    monkeypatch.setattr(mod, "ROOT", root)
+    monkeypatch.setattr(mod, "preflight", lambda: None)
+    calls = []
+
+    def run(*args, **kw):
+        calls.append(args)
+        if failure == "health" and args[:3] == ("docker", "compose", "up"):
+            raise RuntimeError("health failed")
+        code = 1 if failure == "divergent" and "merge-base" in args else 0
+        return subprocess.CompletedProcess(args, code, stdout="abc123", stderr="")
+
+    monkeypatch.setattr(mod, "run", run)
+    with pytest.raises(RuntimeError, match=failure):
+        mod.deploy()
+    assert len(db.runs()) == 1 and not (config.DATA / ".maintenance").exists()
+    if failure == "divergent":
+        assert not any("build" in args for args in calls)
+    assert not any("down" in args or "prune" in args for args in calls)

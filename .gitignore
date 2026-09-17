@@ -1,0 +1,17 @@
+/data/
+/.env
+/settings.json
+/build.log
+/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+/cache/
+*.log
+/.venv312/
+/datasets/cache/
+frontend/*.tsbuildinfo

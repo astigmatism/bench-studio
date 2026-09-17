@@ -1,0 +1,273 @@
+{
+  "dataset_revision": "7ab5114912baf22bb098818e604c02fe7ad2c11f",
+  "scripts_revision": "ca10a60a5fcae51e6948ffe1485d4153d421e6c5",
+  "adapter_revision": "b07f3bfb2c5730c50119c6c84e0e4d8572d9a7f2",
+  "dataset_sha256": "c8cd7115496ad4e9a8b21d088cef576a65bf821bb542b24336f13f714cef13f8",
+  "selection": "SHA256(42:instance_id), interleaved Python/TypeScript, excluding upstream known broken tasks; oracle validation required",
+  "candidates": [
+    {
+      "id": "instance_internetarchive__openlibrary-91efee627df01e32007abf2d6ebf73f9d9053076-vbee42ad1b72fb23c6a1c874868a720b370983ed2",
+      "original_id": "instance_internetarchive__openlibrary-91efee627df01e32007abf2d6ebf73f9d9053076-vbee42ad1b72fb23c6a1c874868a720b370983ed2",
+      "language": "python",
+      "repo": "internetarchive/openlibrary",
+      "base_commit": "ab62fa4d63d15b7bc1b9a856ae9acd74df1f1f93",
+      "base_image": "jefzda/sweap-images:internetarchive.openlibrary-internetarchive__openlibrary-91efee627df01e32007abf2d6ebf73f9d9053076-vbee42ad1b72fb23c6a1c874868a72"
+    },
+    {
+      "id": "instance_tutao__tutanota-f373ac3808deefce8183dad8d16729839cc330c1-v2939aa9f4356f0dc9f523ee5ce19d09e08ab979b",
+      "original_id": "instance_tutao__tutanota-f373ac3808deefce8183dad8d16729839cc330c1-v2939aa9f4356f0dc9f523ee5ce19d09e08ab979b",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "a834bd49d148888778075a3a48d3b92d832c4eed",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-f373ac3808deefce8183dad8d16729839cc330c1-v2939aa9f4356f0dc9f523ee5ce19d09e08ab979b"
+    },
+    {
+      "id": "instance_ansible__ansible-a02e22e902a69aeb465f16bf03f7f5a91b2cb828-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "original_id": "instance_ansible__ansible-a02e22e902a69aeb465f16bf03f7f5a91b2cb828-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "813c25eed1e4832a8ae363455a2f40bb3de33c7f",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-a02e22e902a69aeb465f16bf03f7f5a91b2cb828-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5"
+    },
+    {
+      "id": "instance_tutao__tutanota-befce4b146002b9abc86aa95f4d57581771815ce-vee878bb72091875e912c52fc32bc60ec3760227b",
+      "original_id": "instance_tutao__tutanota-befce4b146002b9abc86aa95f4d57581771815ce-vee878bb72091875e912c52fc32bc60ec3760227b",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "26c98dd37701c1c657edec33465d52e43e4a05cb",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-befce4b146002b9abc86aa95f4d57581771815ce-vee878bb72091875e912c52fc32bc60ec3760227b"
+    },
+    {
+      "id": "instance_ansible__ansible-395e5e20fab9cad517243372fa3c3c5d9e09ab2a-v7eee2454f617569fd6889f2211f75bc02a35f9f8",
+      "original_id": "instance_ansible__ansible-395e5e20fab9cad517243372fa3c3c5d9e09ab2a-v7eee2454f617569fd6889f2211f75bc02a35f9f8",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "cd64e0b070f8630e1dcc021e594ed42ea7afe304",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-395e5e20fab9cad517243372fa3c3c5d9e09ab2a-v7eee2454f617569fd6889f2211f75bc02a35f9f8"
+    },
+    {
+      "id": "instance_tutao__tutanota-da4edb7375c10f47f4ed3860a591c5e6557f7b5c-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf",
+      "original_id": "instance_tutao__tutanota-da4edb7375c10f47f4ed3860a591c5e6557f7b5c-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "5f77040986114d0ed019e58cab6ddf5152e55dbb",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-da4edb7375c10f47f4ed3860a591c5e6557f7b5c-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf"
+    },
+    {
+      "id": "instance_qutebrowser__qutebrowser-9ed748effa8f3bcd804612d9291da017b514e12f-v363c8a7e5ccdf6968fc7ab84a2053ac78036691d",
+      "original_id": "instance_qutebrowser__qutebrowser-9ed748effa8f3bcd804612d9291da017b514e12f-v363c8a7e5ccdf6968fc7ab84a2053ac78036691d",
+      "language": "python",
+      "repo": "qutebrowser/qutebrowser",
+      "base_commit": "30250d8e680041a15e440aa7441a224d670c3862",
+      "base_image": "jefzda/sweap-images:qutebrowser.qutebrowser-qutebrowser__qutebrowser-9ed748effa8f3bcd804612d9291da017b514e12f-v363c8a7e5ccdf6968fc7ab84a2053ac780366"
+    },
+    {
+      "id": "instance_tutao__tutanota-51818218c6ae33de00cbea3a4d30daac8c34142e-vc4e41fd0029957297843cb9dec4a25c7c756f029",
+      "original_id": "instance_tutao__tutanota-51818218c6ae33de00cbea3a4d30daac8c34142e-vc4e41fd0029957297843cb9dec4a25c7c756f029",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "dac77208814de95c4018bcf13137324153cc9a3a",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-51818218c6ae33de00cbea3a4d30daac8c34142e-vc4e41fd0029957297843cb9dec4a25c7c756f029"
+    },
+    {
+      "id": "instance_ansible__ansible-ed6581e4db2f1bec5a772213c3e186081adc162d-v0f01c69f1e2528b935359cfe578530722bca2c59",
+      "original_id": "instance_ansible__ansible-ed6581e4db2f1bec5a772213c3e186081adc162d-v0f01c69f1e2528b935359cfe578530722bca2c59",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "c819c1725de510fb41e8bdc38e68c2ac1df81ced",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-ed6581e4db2f1bec5a772213c3e186081adc162d-v0f01c69f1e2528b935359cfe578530722bca2c59"
+    },
+    {
+      "id": "instance_tutao__tutanota-4b4e45949096bb288f2b522f657610e480efa3e8-vee878bb72091875e912c52fc32bc60ec3760227b",
+      "original_id": "instance_tutao__tutanota-4b4e45949096bb288f2b522f657610e480efa3e8-vee878bb72091875e912c52fc32bc60ec3760227b",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "636501198b8b94196281e45c796180e602cdfc66",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-4b4e45949096bb288f2b522f657610e480efa3e8-vee878bb72091875e912c52fc32bc60ec3760227b"
+    },
+    {
+      "id": "instance_internetarchive__openlibrary-3aeec6afed9198d734b7ee1293f03ca94ff970e1-v13642507b4fc1f8d234172bf8129942da2c2ca26",
+      "original_id": "instance_internetarchive__openlibrary-3aeec6afed9198d734b7ee1293f03ca94ff970e1-v13642507b4fc1f8d234172bf8129942da2c2ca26",
+      "language": "python",
+      "repo": "internetarchive/openlibrary",
+      "base_commit": "b36762b27e11d2bdf1ef556a8c5588294bb7deb7",
+      "base_image": "jefzda/sweap-images:internetarchive.openlibrary-internetarchive__openlibrary-3aeec6afed9198d734b7ee1293f03ca94ff970e1-v13642507b4fc1f8d234172bf81299"
+    },
+    {
+      "id": "instance_tutao__tutanota-b4934a0f3c34d9d7649e944b183137e8fad3e859-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf",
+      "original_id": "instance_tutao__tutanota-b4934a0f3c34d9d7649e944b183137e8fad3e859-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "6f4d5b9dfc3afe58c74be3be03cab3eb3865aa56",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-b4934a0f3c34d9d7649e944b183137e8fad3e859-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf"
+    },
+    {
+      "id": "instance_ansible__ansible-fb144c44144f8bd3542e71f5db62b6d322c7bd85-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "original_id": "instance_ansible__ansible-fb144c44144f8bd3542e71f5db62b6d322c7bd85-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "662d34b9a7a1b3ab1d4847eeaef201a005826aef",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-fb144c44144f8bd3542e71f5db62b6d322c7bd85-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5"
+    },
+    {
+      "id": "instance_tutao__tutanota-de49d486feef842101506adf040a0f00ded59519-v10a26bfb45a064b93f4fc044a0254925037b88f1",
+      "original_id": "instance_tutao__tutanota-de49d486feef842101506adf040a0f00ded59519-v10a26bfb45a064b93f4fc044a0254925037b88f1",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "cf4bcf0b4c5ecc970715c4ca59e57cfa2c4246af",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-de49d486feef842101506adf040a0f00ded59519-v10a26bfb45a064b93f4fc044a0254925037b88f1"
+    },
+    {
+      "id": "instance_ansible__ansible-e9e6001263f51103e96e58ad382660df0f3d0e39-v30a923fb5c164d6cd18280c02422f75e611e8fb2",
+      "original_id": "instance_ansible__ansible-e9e6001263f51103e96e58ad382660df0f3d0e39-v30a923fb5c164d6cd18280c02422f75e611e8fb2",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "bddb9a7490b5e9475d0d01a8d906332e81789cde",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-e9e6001263f51103e96e58ad382660df0f3d0e39-v30a923fb5c164d6cd18280c02422f75e611e8fb2"
+    },
+    {
+      "id": "instance_tutao__tutanota-1e516e989b3c0221f4af6b297d9c0e4c43e4adc3-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf",
+      "original_id": "instance_tutao__tutanota-1e516e989b3c0221f4af6b297d9c0e4c43e4adc3-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "7ebf14a3432c8f0d8b31d48968a08d055bec2002",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-1e516e989b3c0221f4af6b297d9c0e4c43e4adc3-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf"
+    },
+    {
+      "id": "instance_ansible__ansible-984216f52e76b904e5b0fa0fb956ab4f1e0a7751-v1055803c3a812189a1133297f7f5468579283f86",
+      "original_id": "instance_ansible__ansible-984216f52e76b904e5b0fa0fb956ab4f1e0a7751-v1055803c3a812189a1133297f7f5468579283f86",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "d79b23910a1a16931885c5b3056179e72e0e6466",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-984216f52e76b904e5b0fa0fb956ab4f1e0a7751-v1055803c3a812189a1133297f7f5468579283f86"
+    },
+    {
+      "id": "instance_tutao__tutanota-fe240cbf7f0fdd6744ef7bef8cb61676bcdbb621-vc4e41fd0029957297843cb9dec4a25c7c756f029",
+      "original_id": "instance_tutao__tutanota-fe240cbf7f0fdd6744ef7bef8cb61676bcdbb621-vc4e41fd0029957297843cb9dec4a25c7c756f029",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "fe8a8d9396398fa221bac7ac27bb92c44d93c176",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-fe240cbf7f0fdd6744ef7bef8cb61676bcdbb621-vc4e41fd0029957297843cb9dec4a25c7c756f029"
+    },
+    {
+      "id": "instance_internetarchive__openlibrary-798a582540019363d14b2090755cc7b89a350788-v430f20c722405e462d9ef44dee7d34c41e76fe7a",
+      "original_id": "instance_internetarchive__openlibrary-798a582540019363d14b2090755cc7b89a350788-v430f20c722405e462d9ef44dee7d34c41e76fe7a",
+      "language": "python",
+      "repo": "internetarchive/openlibrary",
+      "base_commit": "a8db93460b49a39fc3bd8639e34abfca9303236f",
+      "base_image": "jefzda/sweap-images:internetarchive.openlibrary-internetarchive__openlibrary-798a582540019363d14b2090755cc7b89a350788-v430f20c722405e462d9ef44dee7d3"
+    },
+    {
+      "id": "instance_tutao__tutanota-fbdb72a2bd39b05131ff905780d9d4a2a074de26-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf",
+      "original_id": "instance_tutao__tutanota-fbdb72a2bd39b05131ff905780d9d4a2a074de26-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "1919cee2f58945936f8cfabf32ac8bee670b75ed",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-fbdb72a2bd39b05131ff905780d9d4a2a074de26-vbc0d9ba8f0071fbe982809910959a6ff8884dbbf"
+    },
+    {
+      "id": "instance_ansible__ansible-83fb24b923064d3576d473747ebbe62e4535c9e3-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "original_id": "instance_ansible__ansible-83fb24b923064d3576d473747ebbe62e4535c9e3-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "0044091a055dd9cd448f7639a65b7e8cc3dacbf1",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-83fb24b923064d3576d473747ebbe62e4535c9e3-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5"
+    },
+    {
+      "id": "instance_tutao__tutanota-8513a9e8114a8b42e64f4348335e0f23efa054c4-vee878bb72091875e912c52fc32bc60ec3760227b",
+      "original_id": "instance_tutao__tutanota-8513a9e8114a8b42e64f4348335e0f23efa054c4-vee878bb72091875e912c52fc32bc60ec3760227b",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "e5b2d146b0f5b67f46ba0f627439f11e763ebbc8",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-8513a9e8114a8b42e64f4348335e0f23efa054c4-vee878bb72091875e912c52fc32bc60ec3760227b"
+    },
+    {
+      "id": "instance_ansible__ansible-b6290e1d156af608bd79118d209a64a051c55001-v390e508d27db7a51eece36bb6d9698b63a5b638a",
+      "original_id": "instance_ansible__ansible-b6290e1d156af608bd79118d209a64a051c55001-v390e508d27db7a51eece36bb6d9698b63a5b638a",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "b6e71c5ffb8ba382b6f49fc9b25e6d8bc78a9a88",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-b6290e1d156af608bd79118d209a64a051c55001-v390e508d27db7a51eece36bb6d9698b63a5b638a"
+    },
+    {
+      "id": "instance_tutao__tutanota-219bc8f05d7b980e038bc1524cb021bf56397a1b-vee878bb72091875e912c52fc32bc60ec3760227b",
+      "original_id": "instance_tutao__tutanota-219bc8f05d7b980e038bc1524cb021bf56397a1b-vee878bb72091875e912c52fc32bc60ec3760227b",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "9dfb7c231f98a2d3bf48a99577d8a55cfdb2480b",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-219bc8f05d7b980e038bc1524cb021bf56397a1b-vee878bb72091875e912c52fc32bc60ec3760227b"
+    },
+    {
+      "id": "instance_ansible__ansible-b5e0293645570f3f404ad1dbbe5f006956ada0df-v0f01c69f1e2528b935359cfe578530722bca2c59",
+      "original_id": "instance_ansible__ansible-b5e0293645570f3f404ad1dbbe5f006956ada0df-v0f01c69f1e2528b935359cfe578530722bca2c59",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "9b0d2decb24b5ef08ba3e27e4ab18dcf10afbbc4",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-b5e0293645570f3f404ad1dbbe5f006956ada0df-v0f01c69f1e2528b935359cfe578530722bca2c59"
+    },
+    {
+      "id": "instance_tutao__tutanota-40e94dee2bcec2b63f362da283123e9df1874cc1-vc4e41fd0029957297843cb9dec4a25c7c756f029",
+      "original_id": "instance_tutao__tutanota-40e94dee2bcec2b63f362da283123e9df1874cc1-vc4e41fd0029957297843cb9dec4a25c7c756f029",
+      "language": "typescript",
+      "repo": "tutao/tutanota",
+      "base_commit": "a74f4b8d6f357e1ef0f22b00a244c8a3d9272304",
+      "base_image": "jefzda/sweap-images:tutao.tutanota-tutao__tutanota-40e94dee2bcec2b63f362da283123e9df1874cc1-vc4e41fd0029957297843cb9dec4a25c7c756f029"
+    },
+    {
+      "id": "instance_ansible__ansible-106909db8b730480615f4a33de0eb5b710944e78-v0f01c69f1e2528b935359cfe578530722bca2c59",
+      "original_id": "instance_ansible__ansible-106909db8b730480615f4a33de0eb5b710944e78-v0f01c69f1e2528b935359cfe578530722bca2c59",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "3fffddc18305f4d910774b57bc90e14456e7a15b",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-106909db8b730480615f4a33de0eb5b710944e78-v0f01c69f1e2528b935359cfe578530722bca2c59"
+    },
+    {
+      "id": "instance_ansible__ansible-3b823d908e8a5d17674f8c26d337d3114b7493b1-v0f01c69f1e2528b935359cfe578530722bca2c59",
+      "original_id": "instance_ansible__ansible-3b823d908e8a5d17674f8c26d337d3114b7493b1-v0f01c69f1e2528b935359cfe578530722bca2c59",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "92df66480613d0f3c1f11ab27146e3162d2a5bd5",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-3b823d908e8a5d17674f8c26d337d3114b7493b1-v0f01c69f1e2528b935359cfe578530722bca2c59"
+    },
+    {
+      "id": "instance_internetarchive__openlibrary-e390c1212055dd84a262a798e53487e771d3fb64-v8717e18970bcdc4e0d2cea3b1527752b21e74866",
+      "original_id": "instance_internetarchive__openlibrary-e390c1212055dd84a262a798e53487e771d3fb64-v8717e18970bcdc4e0d2cea3b1527752b21e74866",
+      "language": "python",
+      "repo": "internetarchive/openlibrary",
+      "base_commit": "a08e565962ccbbd2931c7e2821bd37067a97f339",
+      "base_image": "jefzda/sweap-images:internetarchive.openlibrary-internetarchive__openlibrary-e390c1212055dd84a262a798e53487e771d3fb64-v8717e18970bcdc4e0d2cea3b15277"
+    },
+    {
+      "id": "instance_internetarchive__openlibrary-89e4b4431fe7506c365a6f6eb6f6d048d04c044c-v08d8e8889ec945ab821fb156c04c7d2e2810debb",
+      "original_id": "instance_internetarchive__openlibrary-89e4b4431fe7506c365a6f6eb6f6d048d04c044c-v08d8e8889ec945ab821fb156c04c7d2e2810debb",
+      "language": "python",
+      "repo": "internetarchive/openlibrary",
+      "base_commit": "64c18604714c0672f272ee1e620ad62e9a248312",
+      "base_image": "jefzda/sweap-images:internetarchive.openlibrary-internetarchive__openlibrary-89e4b4431fe7506c365a6f6eb6f6d048d04c044c-v08d8e8889ec945ab821fb156c04c7"
+    },
+    {
+      "id": "instance_internetarchive__openlibrary-308a35d6999427c02b1dbf5211c033ad3b352556-ve8c8d62a2b60610a3c4631f5f23ed866bada9818",
+      "original_id": "instance_internetarchive__openlibrary-308a35d6999427c02b1dbf5211c033ad3b352556-ve8c8d62a2b60610a3c4631f5f23ed866bada9818",
+      "language": "python",
+      "repo": "internetarchive/openlibrary",
+      "base_commit": "cb6c053eba49facef557ee95d587f6d6c93caf3a",
+      "base_image": "jefzda/sweap-images:internetarchive.openlibrary-internetarchive__openlibrary-308a35d6999427c02b1dbf5211c033ad3b352556-ve8c8d62a2b60610a3c4631f5f23ed"
+    },
+    {
+      "id": "instance_internetarchive__openlibrary-8a5a63af6e0be406aa6c8c9b6d5f28b2f1b6af5a-v0f5aece3601a5b4419f7ccec1dbda2071be28ee4",
+      "original_id": "instance_internetarchive__openlibrary-8a5a63af6e0be406aa6c8c9b6d5f28b2f1b6af5a-v0f5aece3601a5b4419f7ccec1dbda2071be28ee4",
+      "language": "python",
+      "repo": "internetarchive/openlibrary",
+      "base_commit": "9d9f3a19983876522bcfd17c9079c46a17986cb3",
+      "base_image": "jefzda/sweap-images:internetarchive.openlibrary-internetarchive__openlibrary-8a5a63af6e0be406aa6c8c9b6d5f28b2f1b6af5a-v0f5aece3601a5b4419f7ccec1dbda"
+    },
+    {
+      "id": "instance_ansible__ansible-e22e103cdf8edc56ff7d9b848a58f94f1471a263-v1055803c3a812189a1133297f7f5468579283f86",
+      "original_id": "instance_ansible__ansible-e22e103cdf8edc56ff7d9b848a58f94f1471a263-v1055803c3a812189a1133297f7f5468579283f86",
+      "language": "python",
+      "repo": "ansible/ansible",
+      "base_commit": "a77dbf08663e002198d0fa2af502d5cde8009454",
+      "base_image": "jefzda/sweap-images:ansible.ansible-ansible__ansible-e22e103cdf8edc56ff7d9b848a58f94f1471a263-v1055803c3a812189a1133297f7f5468579283f86"
+    }
+  ]
+}

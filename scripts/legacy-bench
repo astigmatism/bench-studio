@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Host-side launcher. Docker access stays on the host, outside benchmark containers."""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+from common import ACTIVE, atomic_json, now, read_json, require_idle, resolve, snapshot, write_index
+
+ROOT = Path(__file__).resolve().parent
+DATA = ROOT / "data"
+SETTINGS = read_json(ROOT / "settings.json")
+
+
+def docker(*args, check=True):
+    return subprocess.run(["docker", *args], cwd=ROOT, text=True, capture_output=True, check=check,
+                          env=dict(os.environ, COMPOSE_IGNORE_ORPHANS="true"))
+
+
+def run_path(run_id):
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
+        raise RuntimeError("Invalid run ID")
+    p = DATA / "runs" / run_id
+    if not (p / "manifest.json").exists():
+        raise RuntimeError(f"Unknown run: {run_id}")
+    return p
+
+
+def jobs():
+    # First verify Docker is reachable; an unavailable daemon isn't evidence of a dead job.
+    docker("info", "--format", "{{.ServerVersion}}")
+    for path in sorted((DATA / "runs").glob("*/manifest.json"), reverse=True):
+        m = read_json(path)
+        if m["status"] in ACTIVE:
+            probe = docker("inspect", "--format", "{{json .State}}", m["container"], check=False)
+            if probe.returncode == 0:
+                state = json.loads(probe.stdout)
+                dead = not state["Running"] and state["Status"] != "created"
+            else:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(m["created_at"])).total_seconds()
+                dead = age > 60
+            if dead:
+                m.update(status="interrupted", finished_at=now(),
+                         error="Worker stopped without a terminal manifest; completed phase files are retained")
+                atomic_json(path, m)
+        yield m
+
+
+def models():
+    s = snapshot(SETTINGS)
+    print(f"AI Runtime: {s['runtime']['profile']} / ready={s['runtime']['ready']}")
+    print("Maintenance:", json.dumps(s["runtime"].get("maintenance", {})))
+    for target in ("daytime", "nighttime"):
+        m = resolve(s, target)
+        print(f"{target:10} {m['canonical']:38} context={m['context']} processing={m['service'].get('processing')}")
+    return s
+
+
+def host_evidence(s):
+    info = {"collected_at": now(), "docker": docker("version", "--format", "{{.Server.Version}}").stdout.strip(),
+            "benchmark_image": json.loads(docker("image", "inspect", SETTINGS["image"], "--format", "{{json .Id}}").stdout)}
+    try:
+        info["gpus"] = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,name,driver_version,memory.total,utilization.gpu,temperature.gpu,power.draw",
+             "--format=csv,noheader"], text=True).strip()
+    except (FileNotFoundError, subprocess.SubprocessError):
+        info["gpus"] = "unavailable"
+    info["engine_args"] = {}
+    for service in s["runtime"]["services"]:
+        args = json.loads(docker("inspect", service["container_name"], "--format", "{{json .Config.Cmd}}").stdout)
+        info["engine_args"][service["model"]] = args
+    # These loopback URLs are used only for host-side metadata, never inference.
+    from common import get_json
+    info["backend_defaults"] = {}
+    for target, port in (("daytime", 18080), ("nighttime", 18081)):
+        try:
+            p = get_json(f"http://127.0.0.1:{port}/props").get("default_generation_settings", {})
+            info["backend_defaults"][target] = {"context": p.get("n_ctx"), "params": p.get("params", {})}
+        except Exception as e:
+            info["backend_defaults"][target] = {"unavailable": str(e)}
+    return info
+
+
+def launch(args):
+    DATA.mkdir(exist_ok=True)
+    with (DATA / ".control.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        targets = ["daytime", "nighttime"] if args.target == "both" else [args.target]
+        if args.parallel and args.target != "both":
+            raise RuntimeError("--parallel applies only to target 'both'")
+        for m in jobs():
+            if m["status"] in ACTIVE and set(targets) & set(m["requested_targets"]):
+                raise RuntimeError(f"Existing benchmark owns a requested service: {m['id']}")
+        s = snapshot(SETTINGS)
+        require_idle(s, targets)
+        evidence = host_evidence(s)
+        rid = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + args.target + "-" + args.profile + "-" + uuid.uuid4().hex[:6]
+        path = DATA / "runs" / rid
+        path.mkdir(parents=True)
+        name = "betterbench-job-" + rid.lower()
+        m = {"id": rid, "container": name, "status": "starting", "created_at": now(),
+             "requested_targets": targets, "profile": args.profile,
+             "mode": "parallel" if args.parallel else "sequential", "settings": SETTINGS,
+             "resolved": {t: resolve(s, t) for t in targets}, "host": evidence,
+             "targets": {}, "progress": "Container starting"}
+        atomic_json(path / "manifest.json", m)
+        (path / "run.log").write_text(f"{now()} Launch requested\n")
+        write_index(DATA)
+        result = docker("compose", "run", "--no-deps", "--detach", "--name", name,
+                        "--label", f"io.betterbench.run={rid}", "worker",
+                        "python", "/app/worker.py", f"/data/runs/{rid}/manifest.json", check=False)
+        if result.returncode:
+            m.update(status="failed", error=result.stderr.strip(), finished_at=now())
+            atomic_json(path / "manifest.json", m)
+            write_index(DATA)
+            raise RuntimeError("Container could not start: " + result.stderr.strip())
+        print(rid)
+        print(f"Reports: {SETTINGS['report_url']}/")
+        print(f"Status: ./bench status {rid}\nLogs:   ./bench logs {rid}\nStop:   ./bench stop {rid}")
+
+
+def status(run_id=None):
+    selected = [m for m in jobs() if not run_id or m["id"] == run_id]
+    if run_id and not selected:
+        raise RuntimeError(f"Unknown run: {run_id}")
+    for m in selected:
+        print(f"{m['id']}  {m['status']:12} {m.get('error') or m.get('progress', '')}")
+        for target in m.get("targets", {}):
+            p = DATA / "runs" / m["id"] / target / "progress.json"
+            if p.exists():
+                progress = read_json(p)
+                state = progress['state']
+                if state == "running" and m['status'] not in ACTIVE:
+                    state = m['status'] + " (last request)"
+                print(f"  {target}: {progress['category']} request {progress['request']} {state}")
+    write_index(DATA)
+    return selected
+
+
+def stop(run_id):
+    p = run_path(run_id)
+    m = read_json(p / "manifest.json")
+    if m["status"] not in ACTIVE:
+        print(f"{run_id} is already {m['status']}")
+        return
+    label = docker("inspect", "--format", '{{index .Config.Labels "io.betterbench.run"}}', m["container"]).stdout.strip()
+    if label != run_id:
+        raise RuntimeError("Container ownership label does not match this run")
+    (p / "stop-requested").write_text(now() + "\n")
+    docker("stop", "--time", "10", m["container"])
+    status(run_id)
+
+
+def compare(args):
+    selections = []
+    for spec in (args.a, args.b):
+        rid, _, explicit_target = spec.partition(":")
+        p = run_path(rid)
+        m = read_json(p / "manifest.json")
+        if m["status"] != "completed":
+            raise RuntimeError(f"Refusing comparison: {p.name} is {m['status']}")
+        targets = m["requested_targets"]
+        target = explicit_target or args.target or (targets[0] if len(targets) == 1 else None)
+        if target not in targets:
+            raise RuntimeError("Use RUN_ID:daytime or RUN_ID:nighttime when comparing runs containing both services")
+        path = p / target / (args.phase + ".json")
+        if not path.exists():
+            raise RuntimeError(f"No {args.phase} result for {target} in {p.name}")
+        selections.append(path)
+    da, db = map(read_json, selections)
+    if da["config"] != db["config"] or da["env"].get("categories") != db["env"].get("categories"):
+        print("NOTE: configurations differ; this is a descriptive comparison, not a controlled A/B.")
+    print("Independent runs: median rates and descriptive changes only; no significance claim.")
+    print("A:", args.a, "B:", args.b)
+    if args.phase == "decode":
+        a = {k: [r["decode_tps"] for r in rows if r.get("ok")] for k, rows in da.get("single_stream", {}).items()}
+        b = {k: [r["decode_tps"] for r in rows if r.get("ok")] for k, rows in db.get("single_stream", {}).items()}
+        label = "Category"
+    else:
+        a = {r["target_depth"]: r["pp_tps"] for r in da.get("prefill", []) if not r.get("skipped")}
+        b = {r["target_depth"]: r["pp_tps"] for r in db.get("prefill", []) if not r.get("skipped")}
+        label = "Target input tokens (approx.)"
+    print(f"| {label} | A median tok/s | B median tok/s | Change B vs A | Samples A/B |")
+    print("|---|---:|---:|---:|---:|")
+    for key in sorted(a.keys() & b.keys()):
+        if not a[key] or not b[key]:
+            continue
+        ma, mb = statistics.median(a[key]), statistics.median(b[key])
+        print(f"| {key} | {ma:.2f} | {mb:.2f} | {(mb / ma - 1) * 100:+.2f}% | {len(a[key])}/{len(b[key])} |")
+    if args.phase == "prefill":
+        print("Input depths are targets; actual token counts are preserved in each JSON/HTML report.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("models")
+    sub.add_parser("index")
+    run = sub.add_parser("run")
+    run.add_argument("target", choices=["daytime", "nighttime", "both"])
+    run.add_argument("--profile", choices=sorted(p.stem for p in (ROOT / "profiles").glob("*.json")), default="coding")
+    run.add_argument("--parallel", action="store_true")
+    state = sub.add_parser("status")
+    state.add_argument("run_id", nargs="?")
+    for command in ("logs", "stop", "wait"):
+        p = sub.add_parser(command)
+        p.add_argument("run_id")
+        if command == "logs":
+            p.add_argument("--no-follow", action="store_true")
+    cmp = sub.add_parser("compare")
+    cmp.add_argument("a")
+    cmp.add_argument("b")
+    cmp.add_argument("--target", choices=["daytime", "nighttime"])
+    cmp.add_argument("--phase", choices=["decode", "prefill"], default="decode")
+    args = parser.parse_args()
+    if args.command == "models": models()
+    elif args.command == "index": write_index(DATA)
+    elif args.command == "run": launch(args)
+    elif args.command == "status": status(args.run_id)
+    elif args.command == "stop": stop(args.run_id)
+    elif args.command == "compare": compare(args)
+    elif args.command == "logs":
+        p = run_path(args.run_id) / "run.log"
+        if args.no_follow: print(p.read_text())
+        else: subprocess.run(["tail", "-n", "40", "-f", str(p)])
+    elif args.command == "wait":
+        run_path(args.run_id)
+        while True:
+            m = status(args.run_id)[0]
+            if m["status"] not in ACTIVE:
+                return 0 if m["status"] == "completed" else 1
+            time.sleep(10)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (RuntimeError, subprocess.CalledProcessError, OSError, ValueError) as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nStopped following. Any detached benchmark continues; use ./bench stop RUN_ID to cancel.", file=sys.stderr)
+        sys.exit(130)

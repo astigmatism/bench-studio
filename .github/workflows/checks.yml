@@ -1,0 +1,16 @@
+name: Checks
+on: [push, pull_request]
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -r requirements.txt -r test-requirements.txt
+      - run: PYTHONPATH=.:vendor pytest -q tests vendor/tests
+      - run: sh -n scripts/update-and-restart.sh
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm, cache-dependency-path: frontend/package-lock.json}
+      - run: npm ci && npm run build && npx playwright install --with-deps chromium && npx playwright test
+        working-directory: frontend

@@ -1,0 +1,77 @@
+name: betterbench
+x-common: &common
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ["/tmp:size=1g,mode=1777"]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "2"}
+services:
+  reports:
+    <<: *common
+    image: local/bench-studio:current
+    build: {context: ., target: app, args: {SOURCE_REVISION: "${SOURCE_REVISION:-development}"}}
+    container_name: betterbench-reports
+    mem_limit: 1g
+    pids_limit: 128
+    restart: unless-stopped
+    ports: ["${BIND_IP:-127.0.0.1}:9001:8080"]
+    volumes: ["./data:/data"]
+    environment:
+      DATA_ROOT: /data
+      LLM_ENDPOINT: "${LLM_ENDPOINT:-http://127.0.0.1:11434/v1}"
+      RUNTIME_URL: "${RUNTIME_URL:-http://127.0.0.1:11436/api/status}"
+    labels:
+      io.service-portal.url: "http://${BIND_IP:-127.0.0.1}:9001/"
+      io.service-portal.update.enabled: "true"
+      io.service-portal.update.script: "scripts/update-and-restart.sh"
+      io.service-portal.update.image: "local/bench-studio-updater:current"
+      io.service-portal.update.user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+  runner:
+    <<: *common
+    image: local/bench-studio-runner:current
+    build: {context: ., target: runner, args: {SOURCE_REVISION: "${SOURCE_REVISION:-development}"}}
+    container_name: bench-studio-runner
+    network_mode: host
+    group_add: ["${DOCKER_GID:-999}"]
+    volumes:
+      - "${PROJECT_DIR:-.}/data:${PROJECT_DIR:-.}/data"
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      DATA_ROOT: "${PROJECT_DIR}/data"
+      LLM_ENDPOINT: "${LLM_ENDPOINT}"
+      RUNTIME_URL: "${RUNTIME_URL}"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+    mem_limit: 4g
+    cpus: 2
+    pids_limit: 256
+    restart: unless-stopped
+    labels: {io.service-portal.hidden: "true"}
+    healthcheck:
+      test: [CMD, python, -c, "from studio import db; from datetime import datetime,timezone; s=db.state('runner',{}); assert (datetime.now(timezone.utc)-datetime.fromisoformat(s['updated_at'])).total_seconds()<90"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+  worker:
+    image: local/bench-studio-worker:current
+    build: {context: ., target: worker, args: {SOURCE_REVISION: "${SOURCE_REVISION:-development}"}}
+    profiles: [images]
+  verifier:
+    image: local/bench-studio-verifier:current
+    build: {context: ., target: verifier, args: {SOURCE_REVISION: "${SOURCE_REVISION:-development}"}}
+    profiles: [images]
+  updater:
+    image: local/bench-studio-updater:current
+    build: {context: ., target: updater, args: {SOURCE_REVISION: "${SOURCE_REVISION:-development}"}}
+    profiles: [images]

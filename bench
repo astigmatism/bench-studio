@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Bench Studio command-line client. Uses the same durable scheduler as the UI."""
+
+import argparse, json, os, sys, time, uuid, urllib.request, urllib.error
+from pathlib import Path
+
+root = Path(__file__).resolve().parent
+url = os.environ.get("BENCH_STUDIO_URL")
+if not url and (root / "settings.json").exists():
+    url = json.loads((root / "settings.json").read_text()).get("report_url")
+url = (url or "http://127.0.0.1:9001").rstrip("/")
+
+
+def api(path, body=None):
+    req = urllib.request.Request(
+        url + "/api" + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(e.read().decode())
+
+
+p = argparse.ArgumentParser(description=__doc__)
+s = p.add_subparsers(dest="command", required=True)
+s.add_parser("models")
+s.add_parser("profiles")
+r = s.add_parser("run")
+r.add_argument("target")
+r.add_argument("--profile", default="coding")
+r.add_argument("--size", default="standard")
+r.add_argument("--parallel", action="store_true")
+r.add_argument("--note", default="")
+r = s.add_parser("status")
+r.add_argument("run_id", nargs="?")
+for name in ["logs", "stop", "wait"]:
+    r = s.add_parser(name)
+    r.add_argument("run_id")
+    if name == "logs":
+        r.add_argument("--no-follow", action="store_true")
+r = s.add_parser("compare")
+r.add_argument("a")
+r.add_argument("b")
+r.add_argument("--phase", default="decode")
+a = p.parse_args()
+try:
+    if a.command in ["models", "profiles"]:
+        print(json.dumps(api("/" + a.command), indent=2))
+    elif a.command == "run":
+        targets = (
+            ["daytime", "nighttime"] if a.target == "both" else a.target.split(",")
+        )
+        r = api(
+            "/runs",
+            {
+                "targets": targets,
+                "profile": a.profile,
+                "size": a.size,
+                "mode": "parallel" if a.parallel else "sequential",
+                "note": a.note,
+                "idempotency_key": str(uuid.uuid4()),
+            },
+        )
+        print(r["id"])
+        print(url)
+    elif a.command == "status":
+        print(json.dumps(api("/runs" + ("/" + a.run_id if a.run_id else "")), indent=2))
+    elif a.command == "stop":
+        print(json.dumps(api("/runs/" + a.run_id + "/cancel", {}), indent=2))
+    elif a.command in ["logs", "wait"]:
+        previous = ""
+        while True:
+            r = api("/runs/" + a.run_id)
+            if a.command == "logs":
+                text = api("/runs/" + a.run_id + "/logs")["text"]
+                print(
+                    text[len(previous) :] if text.startswith(previous) else text,
+                    end="",
+                    flush=True,
+                )
+                previous = text
+                if a.no_follow:
+                    break
+            if r["status"] in [
+                "completed",
+                "failed",
+                "invalid",
+                "interrupted",
+                "cancelled",
+                "blocked",
+            ]:
+                if a.command == "wait":
+                    print(r["status"])
+                    sys.exit(0 if r["status"] == "completed" else 1)
+                break
+            time.sleep(2)
+    elif a.command == "compare":
+        aa, _, at = a.a.partition(":")
+        bb, _, bt = a.b.partition(":")
+        ar = api("/runs/" + aa)
+        br = api("/runs/" + bb)
+        at = at or ar["requested_targets"][0]
+        bt = bt or br["requested_targets"][0]
+        print(json.dumps(api(f"/compare?a={aa}&b={bb}&ta={at}&tb={bt}"), indent=2))
+except (RuntimeError, urllib.error.URLError) as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)

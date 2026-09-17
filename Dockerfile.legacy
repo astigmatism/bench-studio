@@ -1,0 +1,34 @@
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS build
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1
+COPY build-requirements.txt /tmp/build-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/build-requirements.txt
+COPY vendor /src
+WORKDIR /src
+RUN python -m hatchling build -t wheel
+
+FROM build AS test
+COPY test-requirements.txt /tmp/test-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/test-requirements.txt
+COPY common.py invoke.py worker.py /integration/
+COPY tests /integration/tests
+COPY profiles /integration/profiles
+ENV BETTERBENCH_NO_UPDATE_CHECK=1 PYTHONUNBUFFERED=1 PYTHONPATH=/integration:/src
+RUN pytest -q /src/tests /integration/tests
+RUN python tools/self_test.py
+RUN touch /tests-passed
+
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+LABEL org.opencontainers.image.title="BetterBench home deployment" \
+      org.opencontainers.image.version="0.6.0" \
+      org.opencontainers.image.source="https://github.com/GGZ14/BetterBench" \
+      org.opencontainers.image.revision="d00ad5ec8098c06584a88ec3468bacd37d5ed098"
+ENV BETTERBENCH_NO_UPDATE_CHECK=1 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 BETTERBENCH_HOME=/data HOME=/tmp
+COPY --from=build /src/dist/*.whl /tmp/wheels/
+RUN pip install --no-cache-dir numpy==2.2.6 && pip install --no-deps /tmp/wheels/*.whl && rm -rf /tmp/wheels
+COPY --from=test /tests-passed /app/tests-passed
+COPY common.py invoke.py worker.py report_server.py /app/
+COPY profiles /app/profiles
+WORKDIR /app
+USER 1000:1000
+CMD ["python", "/app/report_server.py"]
