@@ -1057,13 +1057,17 @@ function RunDetail({
             <div className="chart">
               <ResponsiveContainer width="100%" height="100%">
                 {prefill ? (
-                  <LineChart data={chart}>
+                  <LineChart
+                    data={chart}
+                    margin={{ top: 5, right: 30, left: 0, bottom: 5 }}
+                  >
                     <CartesianGrid
                       stroke="var(--bs-line)"
                       strokeDasharray="3 3"
                     />
                     <XAxis
                       dataKey="actual"
+                      tickFormatter={(value) => fmt(Number(value), 0)}
                       type="number"
                       domain={["dataMin", "dataMax"]}
                       name="Actual input tokens"
@@ -1077,6 +1081,7 @@ function RunDetail({
                       }}
                     />
                     <Line
+                      isAnimationActive={false}
                       dataKey="value"
                       name="Prompt tok/s"
                       stroke="var(--bs-accent)"
