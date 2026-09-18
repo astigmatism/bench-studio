@@ -152,7 +152,14 @@ def compare(a, b, ta, tb):
     if a["status"] != "completed" or b["status"] != "completed":
         raise ValueError("Only completed runs can be compared")
     sa, sb = summarize(a).get(ta), summarize(b).get(tb)
-    if not sa or not sb or sa.get("metric") != sb.get("metric") or not comparable(a, b):
+    if (
+        not sa
+        or not sb
+        or sa.get("score") is None
+        or sb.get("score") is None
+        or sa.get("metric") != sb.get("metric")
+        or not comparable(a, b)
+    ):
         raise ValueError(
             "Select the same profile, size, engine, and execution mode; metrics must match"
         )
@@ -171,6 +178,9 @@ def compare(a, b, ta, tb):
             bb.get("service", {}).get("image_id"),
         ),
     }
+    fields["application revision"] = (a.get("revision"), b.get("revision"))
+    for role in ["worker_image", "verifier_image"]:
+        fields[role] = (a.get("host", {}).get(role), b.get("host", {}).get(role))
     for k in set(a.get("profile_spec", {}).get("parameters", {})) | set(
         b.get("profile_spec", {}).get("parameters", {})
     ):

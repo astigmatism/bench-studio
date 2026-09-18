@@ -751,7 +751,11 @@ function Launcher({
       <div className="bs-form-grid">
         <label className="bs-field">
           Profile
-          <select value={pid} onChange={(e) => choose(e.target.value)}>
+          <select
+            aria-label="Profile"
+            value={pid}
+            onChange={(e) => choose(e.target.value)}
+          >
             {profiles.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -761,7 +765,11 @@ function Launcher({
         </label>
         <label className="bs-field">
           Test size
-          <select value={size} onChange={(e) => setSize(e.target.value)}>
+          <select
+            aria-label="Test size"
+            value={size}
+            onChange={(e) => setSize(e.target.value)}
+          >
             {(p?.sizes || ["standard"]).map((s: string) => (
               <option key={s}>{s}</option>
             ))}
@@ -773,6 +781,7 @@ function Launcher({
         <label className="bs-field">
           Reasoning
           <select
+            aria-label="Reasoning"
             value={values.reasoning_effort || "default"}
             onChange={(e) =>
               setParams({ ...params, reasoning_effort: e.target.value })
@@ -805,7 +814,11 @@ function Launcher({
         {targets.length > 1 && (
           <label className="bs-field">
             Run both models
-            <select value={mode} onChange={(e) => setMode(e.target.value)}>
+            <select
+              aria-label="Run both models"
+              value={mode}
+              onChange={(e) => setMode(e.target.value)}
+            >
               <option value="sequential">
                 Sequential · isolated comparison
               </option>

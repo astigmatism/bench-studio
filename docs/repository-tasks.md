@@ -1,6 +1,6 @@
 # Preparing repository tasks
 
-The repository family is a local subset of SWE-bench Pro, not a full leaderboard evaluation. Candidate task IDs and all upstream revisions are committed under `datasets/`. Candidates are ordered by SHA256 of `42:instance_id`, interleaved between Python and TypeScript, excluding upstream-known invalid/timeout tasks. Select ten verified tasks per language; quick and standard use the first two and five of that fixed list.
+The repository family is a local subset of SWE-bench Pro, not a full leaderboard evaluation. Candidate task IDs and all upstream revisions are committed under `datasets/`. Candidates are ordered by SHA256 of `42:instance_id`, interleaved between Python and TypeScript, excluding upstream-known invalid/timeout tasks. Select the first twenty verified tasks in that order; quick and standard use the first two and five of that fixed list. Oracle failures are replaced by the next eligible candidate, so the final language counts can differ. The committed selection manifest records the exact distribution.
 
 The dataset's TypeScript tasks come from Tutanota; Python candidates span the available Python repositories. This limits what the language-specific score represents. Do not generalize a small subset to all repository work.
 

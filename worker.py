@@ -281,7 +281,7 @@ class Job:
                 "--note",
                 f"mode={self.manifest['mode']}",
                 "--note",
-                "reasoning=server-default",
+                "reasoning=" + parameters.get("reasoning_effort", "default"),
                 "--note",
                 "top_k=server-default-router-does-not-forward",
                 "--note",

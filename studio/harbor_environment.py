@@ -23,6 +23,7 @@ class IsolatedDocker(DockerEnvironment):
                         "main": {
                             "network_mode": "none",
                             "cap_drop": ["ALL"],
+                            "cap_add": ["SETUID", "SETGID"],
                             "security_opt": ["no-new-privileges:true"],
                             "pids_limit": 512,
                             "labels": {

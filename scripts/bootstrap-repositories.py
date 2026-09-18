@@ -26,9 +26,7 @@ def run(args, log, timeout=1800):
 
 
 for record in manifest["candidates"]:
-    # Ten tasks per language, interleaved; first 2/5 form quick/standard subsets.
-    if sum(r["language"] == record["language"] for r in selected) >= 10:
-        continue
+    # Interleaved deterministic candidates; oracle failures are replaced by the next eligible task.
     task = CACHE / record["id"]
     log = CACHE / (record["id"] + ".setup.log")
     for script in task.rglob("*.sh"):
@@ -87,6 +85,10 @@ for record in manifest["candidates"]:
             "none",
             "--cap-drop",
             "ALL",
+            "--cap-add",
+            "SETUID",
+            "--cap-add",
+            "SETGID",
             "--security-opt",
             "no-new-privileges",
             "--cpus",

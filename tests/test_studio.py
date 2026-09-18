@@ -389,3 +389,54 @@ def test_updater_rejects_divergence_and_failed_health(
     if failure == "divergent":
         assert not any("build" in args for args in calls)
     assert not any("down" in args or "prune" in args for args in calls)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("branch", "feature"),
+        ("origin", "https://example.invalid/repo"),
+        ("upstream", "other/main"),
+    ],
+)
+def test_updater_rejects_unexpected_source(monkeypatch, field, value):
+    import subprocess
+
+    spec = importlib.util.spec_from_file_location(
+        "updater_source", Path(__file__).parents[1] / "scripts/update.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod.shutil, "which", lambda t: "/bin/" + t)
+
+    def run(*args, **kw):
+        output = ""
+        if "symbolic-ref" in args:
+            output = value if field == "branch" else "main"
+        if "get-url" in args:
+            output = (
+                value
+                if field == "origin"
+                else "https://github.com/astigmatism/bench-studio.git"
+            )
+        if "@{upstream}" in args:
+            output = value if field == "upstream" else "origin/main"
+        return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(mod, "run", run)
+    with pytest.raises(RuntimeError, match="Refusing"):
+        mod.preflight()
+
+
+@pytest.mark.parametrize(
+    "stderr", ["Error: No such object: worker", "error: no such object: worker"]
+)
+def test_docker_missing_worker_error_is_case_insensitive(monkeypatch, stderr):
+    import subprocess
+
+    monkeypatch.setattr(
+        runner,
+        "docker",
+        lambda *a, **k: subprocess.CompletedProcess(a, 1, "[]", stderr),
+    )
+    assert runner.inspect("worker") is None

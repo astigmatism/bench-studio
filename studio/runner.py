@@ -36,7 +36,7 @@ def docker(*args, check=True):
 def inspect(name):
     p = docker("inspect", name, check=False)
     if p.returncode:
-        if "No such" in p.stderr:
+        if "no such" in p.stderr.lower():
             return None
         raise RuntimeError(p.stderr)
     return json.loads(p.stdout)[0]
