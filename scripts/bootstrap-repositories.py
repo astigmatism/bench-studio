@@ -50,7 +50,15 @@ for record in records:
         script.chmod(0o755)
     if cached.exists():
         evidence = json.loads(cached.read_text())
-        if evidence.get("passed"):
+        image_available = (
+            subprocess.run(
+                ["docker", "image", "inspect", evidence.get("image_id", "missing")],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
+        if evidence.get("passed") and image_available:
             selected.append(record | evidence)
             print("Cached oracle:", record["id"], flush=True)
             continue

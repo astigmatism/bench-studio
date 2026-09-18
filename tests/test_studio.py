@@ -512,3 +512,28 @@ def test_generation_records_defaults_overrides_and_native_workload_budgets(clien
     assert evidence["request_overrides"]["max_tokens"] == 2048
     assert evidence["reasoning"] == "none"
     assert evidence["output_budgets_by_workload"] == {}
+
+
+def test_repository_preflight_rejects_unusable_verifier_before_inference(
+    client, monkeypatch
+):
+    from studio.agent import validate_prepared_tasks
+
+    task = {"id": "test-task", "image_id": "sha256:pinned"}
+    root = config.DATA / "repository-tasks/test-task"
+    root.mkdir(parents=True)
+    (root / "task.toml").write_text('[environment]\ndocker_image = "sha256:pinned"\n')
+    script = root / "test.sh"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o644)
+    calls = []
+    monkeypatch.setattr(runner, "docker", lambda *a: calls.append(a))
+    with pytest.raises(RuntimeError, match="not executable"):
+        validate_prepared_tasks([task])
+    assert not calls
+    script.chmod(0o755)
+    validate_prepared_tasks([task])
+    assert calls == [("image", "inspect", "sha256:pinned")]
+    (root / "task.toml").write_text('[environment]\ndocker_image = "different"\n')
+    with pytest.raises(RuntimeError, match="pinned manifest"):
+        validate_prepared_tasks([task])

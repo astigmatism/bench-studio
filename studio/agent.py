@@ -1,11 +1,27 @@
 """Lifecycle of the trusted Harbor harness, separate from generated-code sandboxes."""
 
-import os, subprocess, sys
+import os, subprocess, sys, tomllib
 from pathlib import Path
 from common import atomic_json, read_json
 from . import config
 
 _processes = {}
+
+
+def validate_prepared_tasks(tasks):
+    from .runner import docker
+
+    for task in tasks:
+        root = config.DATA / "repository-tasks" / task["id"]
+        definition = tomllib.loads((root / "task.toml").read_text())
+        if definition.get("environment", {}).get("docker_image") != task["image_id"]:
+            raise RuntimeError("Prepared task image does not match the pinned manifest")
+        scripts = list(root.rglob("*.sh"))
+        if not scripts or any(not os.access(p, os.X_OK) for p in scripts):
+            raise RuntimeError(
+                "Repository verifier scripts are not executable; rerun task preparation"
+            )
+        docker("image", "inspect", task["image_id"])
 
 
 def launch_agent(m):
@@ -28,6 +44,7 @@ def launch_agent(m):
         != m["profile_spec"]["task_manifest_hash"]
     ):
         raise RuntimeError("Repository task manifest changed while queued")
+    validate_prepared_tasks(eligible[:count])
     m["repository_tasks"] = eligible[:count]
     root = config.DATA / "runs" / m["id"]
     path = root / "manifest.json"

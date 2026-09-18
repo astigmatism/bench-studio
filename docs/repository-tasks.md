@@ -1,6 +1,6 @@
 # Preparing repository tasks
 
-The repository family is a local subset of SWE-bench Pro, not a full leaderboard evaluation. Candidate task IDs and all upstream revisions are committed under `datasets/`. Candidates are ordered by SHA256 of `42:instance_id`, interleaved between Python and TypeScript, excluding upstream-known invalid/timeout tasks. Select the first twenty verified tasks in that order; quick and standard use the first two and five of that fixed list. Oracle failures are replaced by the next eligible candidate, so the final language counts can differ. The committed selection manifest records the exact distribution.
+The repository family is a local subset of SWE-bench Pro, not a full leaderboard evaluation. Candidate task IDs and all upstream revisions are committed under `datasets/`. Candidates are ordered by SHA256 of `42:instance_id`, interleaved between Python and TypeScript, excluding upstream-known invalid/timeout tasks. Select the first twenty verified tasks in that order; quick and standard use the first two and five of that fixed list. Oracle failures are replaced by the next eligible candidate, so the final language counts can differ. The committed selection manifest records the exact distribution: **12 Python and 8 TypeScript tasks**.
 
 The dataset's TypeScript tasks come from Tutanota; Python candidates span the available Python repositories. This limits what the language-specific score represents. Do not generalize a small subset to all repository work.
 
@@ -12,7 +12,7 @@ python scripts/prepare-repositories.py
 python scripts/bootstrap-repositories.py
 ```
 
-`prepare-repositories.py` reconstructs definitions from pinned upstream data and scripts. `bootstrap-repositories.py` resolves base-image digests, builds dependencies, runs the gold patch with networking disabled, and rejects tasks whose required tests do not pass. It records image IDs in each task configuration. No gold solution or gold test is included in the pristine task image. The verifier installs gold tests after the agent finishes.
+`prepare-repositories.py` reconstructs definitions from pinned upstream data and scripts. `bootstrap-repositories.py` uses the published task order and base-image digests, builds dependencies, and runs the gold patch with networking disabled. A published task that fails validation stops preparation; it is never silently substituted. It records image IDs in each task configuration. No gold solution or gold test is included in the pristine task image. The verifier installs gold tests after the agent finishes.
 
 Tutanota's native Node dependencies are prebuilt before timing. Its verifier starts wall time at **2025-01-15 12:00:00 UTC**, using libfaketime with real monotonic time. This addresses an upstream test that otherwise fails late in the day, without changing the test assertions or required-test set. This local adapter condition is recorded in the committed selection manifest.
 

@@ -48,7 +48,7 @@ export BENCH_STUDIO_URL=http://127.0.0.1:9001
 ./bench run both --profile smoke
 ./bench run nighttime --profile coding-checks --size quick
 ./bench status
-./bench logs RUN_ID --follow
+./bench logs RUN_ID  # follows until the run finishes
 ./bench stop RUN_ID
 ```
 
