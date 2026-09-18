@@ -71,7 +71,7 @@ def deploy():
         if db.exists():
             with sqlite3.connect(db, timeout=15) as c:
                 active = c.execute(
-                    "SELECT id FROM runs WHERE status IN ('starting','running','grading','stopping') LIMIT 1"
+                    "SELECT id FROM runs WHERE status IN ('starting','running','grading','stopping','awaiting_review','resume_queued') LIMIT 1"
                 ).fetchone()
                 if active:
                     raise RuntimeError(
@@ -125,9 +125,10 @@ def deploy():
             )
             backup.mkdir(parents=True, exist_ok=True)
             if db.exists():
-                with sqlite3.connect(db) as source, sqlite3.connect(
-                    backup / "studio.sqlite3"
-                ) as dest:
+                with (
+                    sqlite3.connect(db) as source,
+                    sqlite3.connect(backup / "studio.sqlite3") as dest,
+                ):
                     source.backup(dest)
             evidence = {
                 "before_revision": before,
@@ -139,6 +140,8 @@ def deploy():
                 "local/bench-studio-runner:current",
                 "local/bench-studio-worker:current",
                 "local/bench-studio-verifier:current",
+                "local/bench-studio-updater:current",
+                "local/bench-studio-session:current",
             ]:
                 p = run(
                     "docker",
@@ -185,20 +188,33 @@ def deploy():
             print(
                 "Recreating application and controller; waiting for health", flush=True
             )
-            run(
-                "docker",
-                "compose",
-                "up",
-                "-d",
-                "--wait",
-                "--wait-timeout",
-                "150",
-                "reports",
-                "runner",
-                capture=False,
-                env=env,
-            )
+            try:
+                run(
+                    "docker",
+                    "compose",
+                    "up",
+                    "-d",
+                    "--force-recreate",
+                    "--wait",
+                    "--wait-timeout",
+                    "150",
+                    "reports",
+                    "runner",
+                    capture=False,
+                    env=env,
+                )
+            except Exception:
+                safe_to_resume = False
+                print(
+                    "Deployment health failed; maintenance remains active. Follow the recovery guide.",
+                    flush=True,
+                )
+                raise
             print("Success: healthy Bench Studio " + revision, flush=True)
+            print(
+                "The controller will prepare new benchmark fixtures and queue runtime qualification. Follow suite setup in Bench Studio.",
+                flush=True,
+            )
         finally:
             if safe_to_resume:
                 marker.unlink(missing_ok=True)

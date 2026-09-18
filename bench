@@ -34,6 +34,10 @@ r.add_argument("--profile", default="coding")
 r.add_argument("--size", default="standard")
 r.add_argument("--parallel", action="store_true")
 r.add_argument("--note", default="")
+r.add_argument("--difficulty", choices=["small", "medium", "large"])
+r.add_argument("--task", dest="task_selection")
+r.add_argument("--repetitions", type=int, choices=[1, 3, 5])
+r.add_argument("--review-mode", choices=["interactive", "unattended"])
 r = s.add_parser("status")
 r.add_argument("run_id", nargs="?")
 for name in ["logs", "stop", "wait"]:
@@ -41,6 +45,13 @@ for name in ["logs", "stop", "wait"]:
     r.add_argument("run_id")
     if name == "logs":
         r.add_argument("--no-follow", action="store_true")
+r = s.add_parser("review")
+r.add_argument("run_id")
+r.add_argument("--target")
+r.add_argument("--attempt")
+r.add_argument("--revision", type=int)
+r.add_argument("--action", choices=["approve", "revise", "stop"])
+r.add_argument("--feedback", default="")
 r = s.add_parser("compare")
 r.add_argument("a")
 r.add_argument("b")
@@ -62,6 +73,16 @@ try:
                 "mode": "parallel" if a.parallel else "sequential",
                 "note": a.note,
                 "idempotency_key": str(uuid.uuid4()),
+                **{
+                    k: getattr(a, k)
+                    for k in [
+                        "difficulty",
+                        "task_selection",
+                        "repetitions",
+                        "review_mode",
+                    ]
+                    if getattr(a, k) is not None
+                },
             },
         )
         print(r["id"])
@@ -70,6 +91,27 @@ try:
         print(json.dumps(api("/runs" + ("/" + a.run_id if a.run_id else "")), indent=2))
     elif a.command == "stop":
         print(json.dumps(api("/runs/" + a.run_id + "/cancel", {}), indent=2))
+    elif a.command == "review":
+        if not a.action:
+            print(json.dumps(api(f"/runs/{a.run_id}/reviews"), indent=2))
+        else:
+            if not a.target or not a.attempt or not a.revision:
+                raise RuntimeError(
+                    "A decision requires --target, --attempt, and --revision"
+                )
+            print(
+                json.dumps(
+                    api(
+                        f"/runs/{a.run_id}/reviews/{a.target}/{a.attempt}/{a.revision}",
+                        {
+                            "action": a.action,
+                            "feedback": a.feedback,
+                            "idempotency_key": str(uuid.uuid4()),
+                        },
+                    ),
+                    indent=2,
+                )
+            )
     elif a.command in ["logs", "wait"]:
         previous = ""
         while True:

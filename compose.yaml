@@ -38,6 +38,7 @@ services:
       start_period: 15s
   runner:
     <<: *common
+    stop_grace_period: 120s
     image: local/bench-studio-runner:current
     build: {context: ., target: runner, args: {SOURCE_REVISION: "${SOURCE_REVISION:-development}"}}
     container_name: bench-studio-runner
@@ -52,6 +53,9 @@ services:
       RUNTIME_URL: "${RUNTIME_URL}"
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "1"
+      SESSION_AUTO_SETUP: "1"
+      SESSION_IMAGE: local/bench-studio-session:current
+      SESSION_SMOKE_TARGET: "${SESSION_SMOKE_TARGET:-daytime}"
     mem_limit: 4g
     cpus: 2
     pids_limit: 256
@@ -74,4 +78,8 @@ services:
   updater:
     image: local/bench-studio-updater:current
     build: {context: ., target: updater, args: {SOURCE_REVISION: "${SOURCE_REVISION:-development}"}}
+    profiles: [images]
+  session-image:
+    image: local/bench-studio-session:current
+    build: {context: ., dockerfile: datasets/sessions/Dockerfile}
     profiles: [images]

@@ -7,6 +7,14 @@ from . import config, db
 from .repository import collect_trials
 
 
+def baseline_slot(m, target):
+    if m.get("family") in {"session", "vision"}:
+        from .profiles import fingerprint
+
+        return f"sessions-v1:{fingerprint(workload(m))}:{target}"
+    return f"{m.get('profile')}:{m.get('profile_spec', {}).get('size', 'standard')}:{m.get('mode', 'sequential')}:{target}"
+
+
 def import_legacy():
     for path in (config.DATA / "runs").glob("*/manifest.json"):
         try:
@@ -39,14 +47,43 @@ def summarize(m):
             "tasks": [],
         }
         try:
-            if (root / target / "result.json").exists():
+            attempts = (
+                sorted((root / target).glob("*/attempt.json"))
+                if m.get("family") in {"session", "vision"}
+                else []
+            )
+            if attempts:
+                from .session_results import summarize_attempts
+
+                p = m["profile_spec"]
+                item.update(
+                    summarize_attempts(
+                        [read_json(path) for path in attempts],
+                        p,
+                        len(p["task_ids"]) * p["repetitions"],
+                    )
+                )
+            elif (root / target / "result.json").exists():
                 item.update(read_json(root / target / "result.json"))
             elif m.get("family") == "agent":
                 tasks = m.get("repository_tasks")
                 if not tasks and (root / "manifest.json").exists():
                     tasks = read_json(root / "manifest.json").get("repository_tasks")
                 if tasks:
-                    item.update(collect_trials(root / target, tasks, job_error=m.get("error")))
+                    item.update(
+                        collect_trials(root / target, tasks, job_error=m.get("error"))
+                    )
+            elif m.get("family") in {"session", "vision"}:
+                from .session_results import summarize_attempts
+
+                p = m["profile_spec"]
+                rows = [
+                    read_json(path)
+                    for path in sorted((root / target).glob("*/attempt.json"))
+                ]
+                item.update(
+                    summarize_attempts(rows, p, len(p["task_ids"]) * p["repetitions"])
+                )
             elif (root / target / "decode.json").exists():
                 data = read_json(root / target / "decode.json")
                 rows = single_rows(data)
@@ -60,7 +97,7 @@ def summarize(m):
                 )
                 item["tasks"] = [
                     {
-                        "id": f"{cat}/{i+1}",
+                        "id": f"{cat}/{i + 1}",
                         "status": "passed" if r.get("ok") else "failed",
                         "duration": r.get("elapsed_s"),
                         "ttft_ms": r.get("ttft_ms"),
@@ -96,7 +133,7 @@ def summarize(m):
                     for i, rate in enumerate(depth.get("pp_tps", [])):
                         item["tasks"].append(
                             {
-                                "id": f"depth {depth['target_depth']} / {i+1}",
+                                "id": f"depth {depth['target_depth']} / {i + 1}",
                                 "status": "passed",
                                 "prefill_tps": rate,
                                 "prompt_tokens": depth.get("prompt_tokens", [])[i],
@@ -106,10 +143,19 @@ def summarize(m):
         except (ValueError, KeyError, IndexError, TypeError, OSError) as e:
             item["summary_error"] = str(e)
             item["score"] = None
-        if m["status"] != "completed" or item.get("infrastructure_error") or item.get("partial"):
+        if (
+            m["status"] != "completed"
+            or item.get("infrastructure_error")
+            or item.get("partial")
+        ):
             item["score"] = None
-        if m.get("family") in ["quality", "agent"] and m.get("profile_spec", {}).get("execution_adapter_version", 1) < 2:
-            item["validation_warning"] = "Historical v1 result: predates verifier and task-validation fixes. Measurements are preserved; use a v2 profile for a corrected comparison."
+        if (
+            m.get("family") in ["quality", "agent"]
+            and m.get("profile_spec", {}).get("execution_adapter_version", 1) < 2
+        ):
+            item["validation_warning"] = (
+                "Historical v1 result: predates verifier and task-validation fixes. Measurements are preserved; use a v2 profile for a corrected comparison."
+            )
         result[target] = item
     return result
 
@@ -130,7 +176,7 @@ def enrich(m):
         else []
     )
     for t, s in m["summary"].items():
-        slot = f'{m.get("profile")}:{m.get("profile_spec",{}).get("size","standard")}:{m.get("mode","sequential")}:{t}'
+        slot = baseline_slot(m, t)
         with db.connect() as c:
             r = c.execute("SELECT * FROM baselines WHERE slot=?", (slot,)).fetchone()
         if r:
@@ -158,12 +204,16 @@ def enrich(m):
                         )
                     )
                     s["delta_unit"] = "pp" if s["unit"] == "%" else "%"
+    if m.get("family") in {"session", "vision"}:
+        from .session_reviews import reviews
+
+        m["reviews"] = reviews(m["id"])
     return m
 
 
 def workload(m):
     p = m.get("profile_spec", {})
-    return (
+    base = (
         m.get("family", "speed"),
         m.get("profile"),
         p.get("size", "standard"),
@@ -173,6 +223,19 @@ def workload(m):
         p.get("task_manifest_hash"),
         p.get("execution_adapter_version", 1),
     )
+    if m.get("family") in {"session", "vision"}:
+        return base + (
+            p.get("difficulty"),
+            p.get("task_selection"),
+            p.get("repetitions"),
+            p.get("review_mode"),
+            p.get("acceptance_version"),
+            p.get("compaction_version"),
+            p.get("session_image"),
+            p.get("parameters", {}).get("task_timeout"),
+            p.get("parameters", {}).get("max_turns"),
+        )
+    return base
 
 
 def comparable(a, b):
@@ -210,6 +273,11 @@ def compare(a, b, ta, tb):
         ),
     }
     fields["application revision"] = (a.get("revision"), b.get("revision"))
+    if a.get("family") in {"session", "vision"}:
+        fields["vision configuration"] = (
+            a.get("host", {}).get("vision", {}).get(ta),
+            b.get("host", {}).get("vision", {}).get(tb),
+        )
     for role in ["worker_image", "verifier_image", "runner_image"]:
         fields[role] = (a.get("host", {}).get(role), b.get("host", {}).get(role))
     for k in set(a.get("profile_spec", {}).get("parameters", {})) | set(
@@ -219,7 +287,7 @@ def compare(a, b, ta, tb):
             a.get("profile_spec", {}).get("parameters", {}).get(k),
             b.get("profile_spec", {}).get("parameters", {}).get(k),
         )
-    return {
+    result = {
         "a": sa,
         "b": sb,
         "differences": [
@@ -231,3 +299,8 @@ def compare(a, b, ta, tb):
         "a_run": a["id"],
         "b_run": b["id"],
     }
+    if a.get("family") in {"session", "vision"}:
+        from .session_results import paired_comparison
+
+        result["paired"] = paired_comparison(sa, sb)
+    return result

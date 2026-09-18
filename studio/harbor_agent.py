@@ -9,10 +9,15 @@ import os
 import asyncio
 from pathlib import Path
 from harbor.agents.terminus_2.terminus_2 import Terminus2
-from harbor.llms.base import BaseLLM, LLMResponse, OutputLengthExceededError
+from harbor.llms.base import (
+    BaseLLM,
+    LLMResponse,
+    OutputLengthExceededError,
+    ContextLengthExceededError,
+)
 from harbor.llms.lite_llm import STRUCTURED_RESPONSE_PROMPT_TEMPLATE
 from harbor.models.metric import UsageInfo
-from .router_stream import completion
+from .router_stream import completion, ContextBudgetError
 
 
 class RouterLLM(BaseLLM):
@@ -21,7 +26,9 @@ class RouterLLM(BaseLLM):
     async def call(self, *args, **kwargs):
         try:
             return await self._call(*args, **kwargs)
-        except OutputLengthExceededError:
+        except ContextBudgetError as exc:
+            raise ContextLengthExceededError(str(exc)) from exc
+        except (OutputLengthExceededError, ContextLengthExceededError):
             raise
         except Exception as exc:
             self.infrastructure_errors.setdefault(self.model, []).append(str(exc))
@@ -45,7 +52,7 @@ class RouterLLM(BaseLLM):
         message_history=None,
         response_format=None,
         logging_path=None,
-        **kwargs
+        **kwargs,
     ):
         if kwargs.pop("previous_response_id", None) is not None:
             raise ValueError("Stateful Responses API is not used by this adapter")
@@ -63,7 +70,14 @@ class RouterLLM(BaseLLM):
             for m in (message_history or [])
         ]
         messages.append({"role": "user", "content": prompt})
-        permitted = {"temperature", "top_p", "seed", "max_tokens", "reasoning_effort", "reasoning_budget_tokens"}
+        permitted = {
+            "temperature",
+            "top_p",
+            "seed",
+            "max_tokens",
+            "reasoning_effort",
+            "reasoning_budget_tokens",
+        }
         if set(kwargs) - permitted:
             raise ValueError(
                 "Unsupported Harbor call settings: "
@@ -77,9 +91,19 @@ class RouterLLM(BaseLLM):
         }
         if os.environ.get("BENCH_STUDIO_MANIFEST"):
             from common import read_json, wait_for_runtime
+
             manifest = read_json(os.environ["BENCH_STUDIO_MANIFEST"])
-            target = next(t for t, value in manifest["resolved"].items() if value["canonical"] == self.model)
-            await asyncio.to_thread(wait_for_runtime, manifest["settings"], target, manifest["resolved"][target])
+            target = next(
+                t
+                for t, value in manifest["resolved"].items()
+                if value["canonical"] == self.model
+            )
+            await asyncio.to_thread(
+                wait_for_runtime,
+                manifest["settings"],
+                target,
+                manifest["resolved"][target],
+            )
         print(self.model, "request started; input messages", len(messages), flush=True)
         result = await completion(
             self.endpoint,

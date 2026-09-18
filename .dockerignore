@@ -14,3 +14,4 @@ settings.json
 *.log
 
 datasets/cache
+datasets/sessions/**/node_modules

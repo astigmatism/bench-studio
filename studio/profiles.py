@@ -4,7 +4,10 @@ from . import config, db
 
 SPEED = {
     "smoke": ("Quick smoke", "A short routed-inference check."),
-    "coding": ("Coding speed", "Code generation, file edits, and structured output."),
+    "coding": (
+        "Coding throughput",
+        "Code generation, file edits, and structured output.",
+    ),
     "standard": ("Everyday mix", "Eight common assistant workloads."),
     "prefill": ("Context sweep", "Prompt processing across five input depths."),
     "prefill-smoke": ("Context smoke", "A short two-depth prefill check."),
@@ -42,7 +45,7 @@ def builtins():
             }
         )
     for key, name, languages in [
-        ("coding-checks", "Coding checks", ["python", "typescript"]),
+        ("coding-checks", "Function checks", ["python", "typescript"]),
         ("python-checks", "Python checks", ["python"]),
         ("typescript-checks", "TypeScript checks", ["typescript"]),
     ]:
@@ -90,6 +93,9 @@ def builtins():
             "sizes": ["quick", "standard", "full"],
         }
     )
+    from .session_catalog import builtin_profiles
+
+    rows.extend(builtin_profiles())
     for p in rows:
         p["fingerprint"] = fingerprint(p)
     return rows
@@ -98,6 +104,11 @@ def builtins():
 def all_profiles():
     with db.connect() as c:
         custom = [db.unpack(r) for r in c.execute("SELECT document FROM profiles")]
+    from .session_catalog import readiness, FAMILIES
+
+    for p in custom:
+        if p.get("family") in FAMILIES:
+            p["preparation"] = readiness(p["suite"])
     return builtins() + custom
 
 
@@ -108,11 +119,14 @@ def get(pid):
     return p
 
 
-def configure(pid, size="standard", overrides=None):
+def configure(pid, size="standard", overrides=None, **session_options):
     p = get(pid)
     if size not in p["sizes"]:
         raise ValueError("Unsupported test size")
     p["size"] = size
+    from .session_catalog import configure as configure_session, FAMILIES
+
+    configure_session(p, **session_options)
     overrides = overrides or {}
     if set(overrides) - set(p["parameters"]):
         raise ValueError("Unsupported parameter")
@@ -121,7 +135,10 @@ def configure(pid, size="standard", overrides=None):
         if key == "reasoning_effort":
             if value not in ["default", "off", "low", "medium", "xhigh"]:
                 raise ValueError("Invalid reasoning effort")
-        elif value is None and (key == "reasoning_budget_tokens" or (key == "max_tokens" and p["family"] == "speed")):
+        elif value is None and (
+            key == "reasoning_budget_tokens"
+            or (key == "max_tokens" and p["family"] == "speed")
+        ):
             pass
         elif isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"Invalid {key}")
@@ -129,7 +146,13 @@ def configure(pid, size="standard", overrides=None):
             raise ValueError("Temperature must be 0–2")
         elif key == "top_p" and not 0 < value <= 1:
             raise ValueError("top_p must be >0 and ≤1")
-        elif key in ["max_tokens", "max_turns", "task_timeout", "seed", "reasoning_budget_tokens"]:
+        elif key in [
+            "max_tokens",
+            "max_turns",
+            "task_timeout",
+            "seed",
+            "reasoning_budget_tokens",
+        ]:
             if not isinstance(value, int):
                 raise ValueError(f"{key} must be an integer")
             if key != "seed" and value <= 0:
@@ -137,9 +160,17 @@ def configure(pid, size="standard", overrides=None):
     if params.get("max_tokens") and params["max_tokens"] > 65536:
         raise ValueError("Maximum output limit is 65,536")
     thinking = params.get("reasoning_budget_tokens")
-    if thinking is not None and (thinking >= params["max_tokens"] or params["reasoning_effort"] == "off"):
-        raise ValueError("Reasoning budget requires reasoning enabled and must leave room within the total output limit for an answer")
-    if params.get("max_turns", 1) > 100 or params.get("task_timeout", 1) > 3600:
+    if thinking is not None and (
+        thinking >= params["max_tokens"] or params["reasoning_effort"] == "off"
+    ):
+        raise ValueError(
+            "Reasoning budget requires reasoning enabled and must leave room within the total output limit for an answer"
+        )
+    turn_limit, time_limit = (1600, 28800) if p["family"] in FAMILIES else (100, 3600)
+    if (
+        params.get("max_turns", 1) > turn_limit
+        or params.get("task_timeout", 1) > time_limit
+    ):
         raise ValueError("Agent limit exceeds allowed budget")
     if "prefill" in p.get("spec", {}).get("phases", []) and params["temperature"] != 0:
         raise ValueError("BetterBench prefill fixes temperature at zero")
@@ -151,6 +182,10 @@ def configure(pid, size="standard", overrides=None):
 
 
 def attach_manifest(p):
+    from .session_catalog import FAMILIES, attach
+
+    if p["family"] in FAMILIES:
+        attach(p)
     if p["family"] in ["quality", "agent"]:
         p["execution_adapter_version"] = 2
     if p["family"] == "quality":

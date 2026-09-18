@@ -19,6 +19,7 @@ COPY common.py invoke.py worker.py /app/
 COPY vendor /app/vendor
 COPY profiles /app/profiles
 COPY studio /app/studio
+COPY datasets/sessions /app/datasets/sessions
 
 FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS base
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_DISABLE_PIP_VERSION_CHECK=1 BETTERBENCH_NO_UPDATE_CHECK=1 HOME=/tmp PYTHONPATH=/app:/app/vendor
@@ -53,6 +54,7 @@ COPY --from=dockercli /usr/local/libexec/docker/cli-plugins /usr/local/lib/docke
 COPY requirements-runner.txt ./
 RUN pip install --no-cache-dir -r requirements-runner.txt
 COPY --from=source /app /app
+COPY scripts/prepare-sessions.py /app/scripts/prepare-sessions.py
 ARG SOURCE_REVISION=development
 ENV SOURCE_REVISION=$SOURCE_REVISION LITELLM_LOCAL_MODEL_COST_MAP=True
 LABEL org.opencontainers.image.source="https://github.com/astigmatism/bench-studio" org.opencontainers.image.revision=$SOURCE_REVISION

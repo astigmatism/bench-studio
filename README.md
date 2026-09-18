@@ -6,9 +6,11 @@ A local benchmark workbench for AI Runtime and an OpenAI-compatible Ollama route
 
 Open the application on port **9001**. Select **New benchmark**, a loaded model (or both), and a profile. Both models run sequentially unless you explicitly select **Simultaneous · shared load**. Jobs wait for the runtime to be idle. Keep context changes and model loading in AI Runtime.
 
-- **Quick smoke / Coding speed / Everyday mix:** BetterBench's existing workloads and weighted throughput, in tokens/second.
+- **Quick smoke / Coding throughput / Everyday mix:** BetterBench's existing workloads and weighted throughput, in tokens/second.
 - **Context sweep:** prefill throughput plotted against actual prompt depth.
-- **Coding checks:** one attempt per task; quick = 4, standard = 40, full = all eligible pinned tasks. Combined profiles split quick/standard evenly between Python and TypeScript. Python uses HumanEval+ with EvalPlus; TypeScript uses MultiPL-E HumanEval tests. Single-language profiles use 4 or 40 tasks from that language.
+- **Function checks:** one attempt per task; quick = 4, standard = 40, full = all eligible pinned tasks. Combined profiles split quick/standard evenly between Python and TypeScript. Python uses HumanEval+ with EvalPlus; TypeScript uses MultiPL-E HumanEval tests. Single-language profiles use 4 or 40 tasks from that language.
+- **Coding sessions:** Small/Medium/Large features in curated full-stack apps, from read-only planning through approval, implementation and trusted verification. Measure commit-ready rate and active time together.
+- **Vision checks / Visual design:** fixed screenshot understanding checks and clickable prototypes with screenshot critique, objective interaction checks and optional human review. New suites require [offline preparation and runtime qualification](docs/coding-sessions.md).
 - **Repository tasks:** fixed local SWE-bench Pro subsets of 2, 5, or 20 reference-validated tasks with Harbor's Terminus 2 agent. Defaults: 40 turns and 30 minutes per task. These are **local subset results**, not SWE-bench Pro leaderboard scores.
 
 Advanced settings can be saved as a new immutable custom profile. Reasoning defaults to the runtime's setting. Output limits and temperature affect results; keep them stable for repeatable comparisons. Unsupported parameters such as `top_k` are rejected.
@@ -56,7 +58,9 @@ Run `./bench --help` for all commands. Historical manifests under `data/runs` ar
 
 ## Updates and recovery
 
-The `reports` service opts into Service Portal's **Update and restart** action. The prebuilt `local/bench-studio-updater:current` image runs `scripts/update-and-restart.sh` as 1000:1000. It validates Git origin/main/upstream and cleanliness, acquires the scheduler's maintenance lock, refuses active benchmarks, backs up SQLite and image identities, builds replacements, then reconciles both long-lived services with a bounded health wait. Queued jobs persist and require review if the application revision changed.
+The `reports` service opts into Service Portal's **Update and restart** action. The prebuilt `local/bench-studio-updater:current` image runs `scripts/update-and-restart.sh` as 1000:1000. It validates Git origin/main/upstream and cleanliness, acquires the scheduler's maintenance lock, refuses active benchmarks and pending reviews, backs up SQLite and image identities, builds replacements, then reconciles both long-lived services with a bounded health wait. Queued jobs persist and require review if the application revision changed.
+
+The same button builds the new session environment. After the app restarts, the controller automatically validates its fixtures on that Docker host, then queues one unattended qualification per new suite using `SESSION_SMOKE_TARGET` (default `daytime`). Bench Studio displays setup progress; the new profiles remain gated until their qualification succeeds. Initial preparation can take several minutes, and live checks wait for the shared runtime to become idle. No additional shell command is needed for a successful rollout. Existing matching preparation and qualification receipts are reused on later restarts.
 
 Source changes belong in Git; push to `main`, then use the Portal button. No global prune, volume removal, or application `compose down` is used. [Recovery instructions](docs/recovery.md) cover restoring the previous image and database backup.
 

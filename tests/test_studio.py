@@ -358,7 +358,7 @@ def test_updater_failure_preserves_database_and_clears_maintenance(
         mod.deploy()
     assert len(db.runs()) == 1
     assert (config.DATA / ".maintenance").exists() == restore_failure
-    assert len([args for args in calls if args[:3] == ("docker", "image", "tag")]) == 4
+    assert len([args for args in calls if args[:3] == ("docker", "image", "tag")]) == 6
     assert list((config.DATA / "backups").glob("*/studio.sqlite3"))
     assert not any("up" in args or "down" in args or "prune" in args for args in calls)
 
@@ -399,7 +399,8 @@ def test_updater_rejects_divergence_and_failed_health(
     monkeypatch.setattr(mod, "run", run)
     with pytest.raises(RuntimeError, match=failure):
         mod.deploy()
-    assert len(db.runs()) == 1 and not (config.DATA / ".maintenance").exists()
+    assert len(db.runs()) == 1
+    assert (config.DATA / ".maintenance").exists() == (failure == "health")
     if failure in ["divergent", "unpublished"]:
         assert not any("build" in args for args in calls)
     assert not any("down" in args or "prune" in args for args in calls)

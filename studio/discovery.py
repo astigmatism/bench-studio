@@ -1,5 +1,6 @@
 from common import snapshot, resolve, identity, safe_target
 from . import config
+from .session_catalog import vision_support
 
 
 def discover():
@@ -36,6 +37,7 @@ def discover():
                     "gpus": resolved["service"].get("gpu_names", []),
                     "processing": resolved["service"].get("processing", False),
                     "reasoning": resolved["metadata"].get("reasoning", {}),
+                    "vision": vision_support(resolved["metadata"]),
                     "resolved": resolved,
                     "identity": identity(resolved),
                 }

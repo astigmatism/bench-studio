@@ -9,3 +9,6 @@ SETTINGS = {"endpoint": ENDPOINT, "runtime_url": RUNTIME}
 REVISION = os.environ.get("SOURCE_REVISION", "development")
 WORKER_IMAGE = os.environ.get("WORKER_IMAGE", "local/bench-studio-worker:current")
 VERIFIER_IMAGE = os.environ.get("VERIFIER_IMAGE", "local/bench-studio-verifier:current")
+SESSION_AUTO_SETUP = os.environ.get("SESSION_AUTO_SETUP") == "1"
+SESSION_IMAGE = os.environ.get("SESSION_IMAGE", "local/bench-studio-session:current")
+SESSION_SMOKE_TARGET = os.environ.get("SESSION_SMOKE_TARGET", "daytime")

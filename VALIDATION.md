@@ -30,3 +30,33 @@ Task containers were inspected with networking disabled, no GPU, no Docker socke
 - A real update request during an active benchmark was refused. Database/image recovery backups were created under `data/backups/`; results and configuration remained in place. No global prune or `compose down` was used.
 
 The operator guide is in [README.md](README.md); task preparation and recovery procedures are under [docs/](docs/).
+
+## Coding sessions and visual suites — local validation, 2026-09-18
+
+This extension was validated locally without deploying the application or restarting or reconfiguring the model services. The suite preparation receipt is local to this Docker host and is not a production rollout receipt.
+
+- Complete application and vendored-engine suite: **251 passed, 3 skipped**. The skips are existing compiler integration tests that require the separate verifier's npm dependencies. New coverage includes durable review races and reconnection, planning permissions, cancellation, controller interruption, configuration drift, multiple compactions, bounded context recovery, malformed transport, measured timing, baseline compatibility, missing usage, prototype isolation and automatic deployment setup.
+- Browser tests: **12 passed**, including session launch options, custom profiles, plan approval, revision requests, prototype sandboxing, completion/time results, narrow layouts, legacy profiles, deployment setup status and qualification retries. The production TypeScript/Vite build passed. The existing large-chunk advisory remains.
+- Offline coding controls: all **18 expected outcomes** passed across six tasks. Every reference solution passed; every unchanged base and deliberately incomplete implementation failed a relevant private acceptance check. Evidence: `data/session-validation/prepare-41d0b83fc7/coding-sessions/`.
+- Offline visual controls: all **18 expected outcomes** passed across six briefs, including Large multi-screen navigation. Reference prototypes passed functional interactions and desktop/mobile layout checks; empty and noninteractive prototypes failed. Evidence: `data/session-validation/prepare-408b083dcc/visual-design/`.
+- All **12 pinned screenshots** passed manifest/hash validation. The renderer records Chromium 145.0.7632.6, a 960 × 640 viewport and device scale 1.
+- A scripted reference session passed through the real Harbor agent/environment, read-only planning, fixed approval, source edits, fresh offline verification and patch export in seven model-action turns and one verification attempt. It used scripted responses, **not model inference**, and does not qualify a suite. Evidence: `data/session-validation/protocol-real-harbor-v1/`.
+- Fixture source SHA-256: `da2a0f0d3242a055b87843d27bb9e7232c870230f47e10bacc6f88ebc83d7888`. Prepared image identity: `sha256:3e74f144f209d47ffe7eb3e00faa51f5c4d417ea466a5518d65e82c3c237f70a`. The issue-tracker and inventory base revisions are stored in `data/session-preparation.json`.
+
+Live qualifications were submitted through the local controller at `http://127.0.0.1:19001`, targeting the existing Daytime runtime:
+
+| Suite | Qualification run | Outcome |
+| --- | --- | --- |
+| Vision checks | `20260918T203505Z-2b556743` | Passed the selected screenshot check |
+| Coding sessions | `20260918T203930Z-88187cf6` | Passed after one repair; 33 model turns, two verification attempts |
+| Visual design | `20260918T204301Z-2319cdc5` | Queued behind other runtime work at this entry |
+
+Coding sessions and Vision checks are locally qualified. Visual design remains gated until its live qualification passes. Queued or scripted checks are not presented as live model success. Current status and qualification receipts are available in the local run records; production deployment automatically performs preparation and qualification on its own Docker host and data directory. Operational instructions are in [docs/coding-sessions.md](docs/coding-sessions.md).
+
+## Service Portal rollout validation
+
+All six Compose images built locally using separate `:portal-check` tags. The updater image contains Git, Docker CLI, Compose, Python, SQLite, Harbor and the preparation script. Compose configuration preserves the existing single Portal entrypoint and automatically enables suite setup in the runner. This is compatible with the earlier updater's build/recreate commands on the first upgrade.
+
+Tests cover deployment build failures, image restoration, failed health checks keeping maintenance active, refusal of active/reviewing benchmarks, setup's execution lock, interrupted setup cleanup, changed-image invalidation, runtime outages and duplicate qualification prevention. Existing compatible receipts skip setup, and failed live qualification is retried explicitly through the browser.
+
+An isolated container rehearsal used the built application/controller images, the production read-only/capability restrictions, numeric non-root ownership, Docker socket group access and the same absolute host-data mount used in production. Both services became healthy while maintenance remained active. Releasing maintenance started automatic preparation, which passed all 36 coding/visual controls and 12 screenshot validations. A second recreation with the final images reused the identical preparation receipt, created no additional validation directories or inference requests, released the execution lock, and preserved the seeded legacy baseline and report. The rehearsal deliberately selected a nonexistent model to verify that unavailable-runtime qualification remains gated. Evidence: `data/portal-rehearsal/rehearsal-result.json`. Only the isolated rehearsal containers were stopped afterward; the production Portal button was not invoked.

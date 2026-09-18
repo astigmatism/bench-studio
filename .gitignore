@@ -16,3 +16,4 @@ frontend/playwright-report/
 /.venv312/
 /datasets/cache/
 frontend/*.tsbuildinfo
+datasets/sessions/**/node_modules/

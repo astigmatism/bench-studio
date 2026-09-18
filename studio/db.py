@@ -8,6 +8,7 @@ from common import now
 
 TERMINAL = {"completed", "failed", "interrupted", "invalid", "cancelled"}
 ACTIVE = {"starting", "running", "grading", "stopping"}
+WAITING = {"awaiting_review", "resume_queued"}
 
 
 def connect():
@@ -36,7 +37,7 @@ def transaction():
 def initialize():
     with transaction() as c:
         version = c.execute("PRAGMA user_version").fetchone()[0]
-        if version > 1:
+        if version > 2:
             raise RuntimeError(
                 "Database is newer than this application; refusing downgrade"
             )
@@ -48,7 +49,12 @@ def initialize():
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, created_at TEXT NOT NULL, document TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY, document TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS runs_status ON runs(status,created_at);
-        PRAGMA user_version=1;
+        CREATE TABLE IF NOT EXISTS session_reviews(
+            run_id TEXT NOT NULL, target TEXT NOT NULL, attempt_id TEXT NOT NULL,
+            revision INTEGER NOT NULL, document TEXT NOT NULL,
+            decision_key TEXT, PRIMARY KEY(run_id,target,attempt_id,revision),
+            UNIQUE(run_id,decision_key));
+        PRAGMA user_version=2;
         """)
 
 

@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
-from common import now, atomic_json
+from common import now, atomic_json, read_json
 from . import config, db, discovery, profiles, results
 
 
@@ -60,6 +60,11 @@ class Launch(BaseModel):
     mode: str = "sequential"
     note: str = Field(default="", max_length=1000)
     idempotency_key: str = Field(min_length=8, max_length=100)
+    difficulty: str | None = None
+    task_selection: str | None = None
+    repetitions: int | None = Field(default=None, strict=True)
+    review_mode: str | None = None
+    qualification: bool = False
 
 
 class Custom(BaseModel):
@@ -67,6 +72,24 @@ class Custom(BaseModel):
     size: str = "standard"
     overrides: dict = Field(default_factory=dict)
     name: str = Field(min_length=1, max_length=70)
+    difficulty: str | None = None
+    task_selection: str | None = None
+    repetitions: int | None = Field(default=None, strict=True)
+    review_mode: str | None = None
+
+
+def session_options(body):
+    return {
+        k: getattr(body, k)
+        for k in ("difficulty", "task_selection", "repetitions", "review_mode")
+    }
+
+
+class ReviewDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str
+    feedback: str = Field(default="", max_length=8000)
+    idempotency_key: str = Field(min_length=8, max_length=100)
 
 
 class Baseline(BaseModel):
@@ -84,7 +107,13 @@ def require_run(rid):
 def health():
     with db.connect() as c:
         c.execute("SELECT 1")
-    return {"ok": True, "revision": config.REVISION, "runner": db.state("runner")}
+    setup = config.DATA / "session-setup.json"
+    return {
+        "ok": True,
+        "revision": config.REVISION,
+        "runner": db.state("runner"),
+        "session_setup": read_json(setup) if setup.exists() else None,
+    }
 
 
 @app.get("/api/models")
@@ -107,7 +136,9 @@ def list_profiles():
 
 @app.post("/api/profiles", status_code=201)
 def save_profile(body: Custom):
-    p = profiles.configure(body.profile, body.size, body.overrides)
+    p = profiles.configure(
+        body.profile, body.size, body.overrides, **session_options(body)
+    )
     p.update(
         id="custom-" + uuid.uuid4().hex[:12],
         name=body.name,
@@ -143,7 +174,23 @@ def launch(body: Launch):
         ).fetchone()
         if prior:
             return db.unpack(prior)
-    profile = profiles.configure(body.profile, body.size, body.overrides)
+    profile = profiles.configure(
+        body.profile, body.size, body.overrides, **session_options(body)
+    )
+    if body.qualification:
+        if (
+            profile["family"] not in {"session", "vision"}
+            or profile["repetitions"] != 1
+            or profile["task_selection"] == "all"
+            or profile["review_mode"] != "unattended"
+            or len(body.targets) != 1
+        ):
+            raise ValueError(
+                "Qualification requires one unattended task, one repetition and one model"
+            )
+        profile["qualification"] = True
+    if profile["family"] in {"session", "vision"} and body.mode != "sequential":
+        raise ValueError("Session and vision suites run models sequentially")
     profile = profiles.attach_manifest(profile)
     data = discovery.discover()
     available = {m["alias"]: m for m in data["models"] if m["available"]}
@@ -155,10 +202,22 @@ def launch(body: Launch):
     ):
         raise ValueError("Targets must use distinct backends")
     for r in selected.values():
+        from .session_catalog import vision_support
+
+        if profile.get("requires_vision") and vision_support(r["metadata"]) is not True:
+            raise ValueError(
+                "Selected model does not advertise image input and vision support"
+            )
         if profile["parameters"].get("reasoning_budget_tokens") is not None:
             levels = r["metadata"].get("reasoning", {}).get("per_effort", {})
-            if not any("reasoning_budget_tokens" in v for v in levels.values() if isinstance(v, dict)):
-                raise ValueError("Selected endpoint does not advertise reasoning-budget support")
+            if not any(
+                "reasoning_budget_tokens" in v
+                for v in levels.values()
+                if isinstance(v, dict)
+            ):
+                raise ValueError(
+                    "Selected endpoint does not advertise reasoning-budget support"
+                )
         limit = profile["parameters"].get("max_tokens")
         if limit and limit + r["reserve"] + 2048 >= r["context"]:
             raise ValueError("Output budget exceeds available context")
@@ -230,12 +289,38 @@ def baseline(rid: str, body: Baseline):
     result = results.summarize(m).get(body.target)
     if not result or result.get("score") is None:
         raise ValueError("No valid score for selected target")
-    slot = f'{m["profile"]}:{m.get("profile_spec",{}).get("size","standard")}:{m.get("mode","sequential")}:{body.target}'
+    slot = results.baseline_slot(m, body.target)
     with db.transaction() as c:
         c.execute(
             "INSERT OR REPLACE INTO baselines VALUES(?,?,?)", (slot, rid, body.target)
         )
     return {"ok": True}
+
+
+@app.get("/api/runs/{rid}/reviews")
+def run_reviews(rid: str):
+    from .session_reviews import reviews
+
+    require_run(rid)
+    return reviews(rid)
+
+
+@app.post("/api/runs/{rid}/reviews/{target}/{attempt_id}/{revision}")
+def review_decision(
+    rid: str, target: str, attempt_id: str, revision: int, body: ReviewDecision
+):
+    from .session_reviews import decide
+
+    require_run(rid)
+    return decide(
+        rid,
+        target,
+        attempt_id,
+        revision,
+        body.action,
+        body.feedback,
+        body.idempotency_key,
+    )
 
 
 @app.get("/api/compare")
@@ -262,12 +347,25 @@ def artifact(rid: str, name: str):
     require_run(rid)
     root = (config.DATA / "runs" / rid).resolve()
     p = (root / name).resolve()
-    if not p.is_relative_to(root) or not p.is_file():
+    lexical = root / name
+    if (
+        not p.is_relative_to(root)
+        or not p.is_file()
+        or any(
+            x.is_symlink()
+            for x in [lexical, *lexical.parents]
+            if x.is_relative_to(root)
+        )
+    ):
         raise HTTPException(404, "Artifact not found")
     return FileResponse(
         p,
         headers={
-            "Content-Security-Policy": "sandbox allow-scripts; default-src 'self' 'unsafe-inline' data:; frame-ancestors 'self'",
+            "Content-Security-Policy": (
+                "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; frame-ancestors 'self'"
+                if p.name == "prototype.html"
+                else "sandbox allow-scripts; default-src 'self' 'unsafe-inline' data:; frame-ancestors 'self'"
+            ),
             "Cache-Control": "no-store",
         },
     )
@@ -309,7 +407,7 @@ async def events(request: Request):
                 ).fetchall()
             for row in rows:
                 cursor = row["id"]
-                yield f'id: {cursor}\ndata: {row["document"]}\n\n'
+                yield f"id: {cursor}\ndata: {row['document']}\n\n"
             if not rows:
                 yield ": heartbeat\n\n"
             await asyncio.sleep(2)

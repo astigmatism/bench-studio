@@ -99,7 +99,7 @@ test("launch both models, view live logs, cancel, and review rerun", async ({
   await page.getByLabel("Run note").fill("Repeatable baseline");
   await page.getByRole("button", { name: "Queue benchmark" }).click();
   await expect(
-    page.getByRole("heading", { name: "Coding speed", exact: true }),
+    page.getByRole("heading", { name: "Coding throughput", exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Waiting for an idle machine")).toBeVisible();
   await page.getByRole("button", { name: "Logs", exact: true }).click();
@@ -124,7 +124,7 @@ test("profiles, keyboard operation, history, artifacts, comparison", async ({
     page.getByRole("heading", { name: "Repository tasks", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Runs", exact: true }).click();
-  await page.getByRole("button", { name: "Coding speed", exact: true }).click();
+  await page.getByRole("button", { name: "Coding throughput", exact: true }).click();
   await page
     .getByRole("button", { name: "Reports & exports", exact: true })
     .click();
@@ -247,7 +247,7 @@ test("coding details distinguish exhausted output and repetitive reasoning", asy
   await page.route("**/api/runs", (route) => route.fulfill({ json: [run] }));
   await page.reload();
   await page
-    .getByRole("button", { name: "Coding checks", exact: true })
+    .getByRole("button", { name: "Function checks", exact: true })
     .click();
   await expect(
     page.getByText(/1 answers exhausted the total output budget/),
@@ -263,7 +263,7 @@ test("coding launch explains shared output allowance", async ({ page }) => {
     .getByRole("button", { name: "New benchmark", exact: true })
     .click();
   await page
-    .getByRole("button", { name: /Coding checks Solutions graded/ })
+    .getByRole("button", { name: /Function checks Solutions graded/ })
     .click();
   await page.getByText("Advanced parameters · profile defaults").click();
   await expect(

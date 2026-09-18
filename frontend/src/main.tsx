@@ -35,7 +35,23 @@ import {
   Legend,
 } from "recharts";
 import "./style.css";
+import {
+  isSession,
+  sessionDefaults,
+  SessionOptions,
+  SessionDetail,
+  SessionComparison,
+} from "./sessions";
 type Obj = Record<string, any>;
+const runName = (run: Obj) =>
+  (
+    ({
+      coding: "Coding throughput",
+      "coding-checks": "Function checks",
+    }) as Record<string, string>
+  )[run.profile] ||
+  run.profile_spec?.name ||
+  run.profile;
 const terminal = new Set([
   "completed",
   "failed",
@@ -155,6 +171,7 @@ function App() {
     try {
       setRuns(await api("/runs"));
       setHealth(await api("/health"));
+      setProfiles(await api("/profiles"));
     } catch (e) {
       setError(String(e));
     }
@@ -172,9 +189,6 @@ function App() {
   useEffect(() => {
     load();
     loadModels();
-    api("/profiles")
-      .then(setProfiles)
-      .catch((e) => setError(String(e)));
     const es = new EventSource("/api/events");
     let pending: ReturnType<typeof setTimeout> | undefined;
     es.onopen = () => setConnection(true);
@@ -224,11 +238,7 @@ function App() {
     }
   };
   const stop = async (r: Obj) => {
-    if (
-      confirm(
-        `Stop ${r.profile_spec?.name || r.profile}? Partial results will be retained.`,
-      )
-    )
+    if (confirm(`Stop ${runName(r)}? Partial results will be retained.`))
       await mutate(`/runs/${r.id}/cancel`);
   };
   const current = runs.find((r) => r.id === detail);
@@ -268,6 +278,12 @@ function App() {
         </div>
       </header>
       <main className="bs-main">
+        {health.session_setup && health.session_setup.phase !== "ready" && (
+          <div role="status" className="bs-alert">
+            <strong>Benchmark suite setup: </strong>
+            {health.session_setup.detail}
+          </div>
+        )}
         {error && (
           <div role="alert" className="error">
             {error}
@@ -315,7 +331,7 @@ function App() {
                       <span className="bs-small">{elapsed(r)}</span>
                     </div>
                     <h3 style={{ marginTop: 10 }}>
-                      {r.profile_spec?.name || r.profile}{" "}
+                      {runName(r)}{" "}
                       <span className="bs-small">
                         / {r.requested_targets.map(label).join(" + ")}
                       </span>
@@ -389,7 +405,7 @@ function App() {
                           className="bs-quiet"
                           onClick={() => openRun(r.id)}
                         >
-                          {r.profile_spec?.name || r.profile}
+                          {runName(r)}
                         </button>
                         <div className="bs-small">{date(r.created_at)}</div>
                         {r.note && <div className="bs-small">{r.note}</div>}
@@ -576,6 +592,13 @@ function Launcher({
     [busy, setBusy] = useState(false),
     [customName, setCustomName] = useState("");
   const p = profiles.find((x) => x.id === pid);
+  const qualification =
+    !!rerun?.profile_spec?.qualification && pid === rerun?.profile;
+  const [session, setSession] = useState<Obj>(
+    sessionDefaults(
+      rerun?.profile_spec || profiles.find((x) => x.id === initialProfile),
+    ),
+  );
   const values = { ...p?.parameters, ...params };
   useEffect(() => {
     if (!targets.length && models.some((m) => m.available))
@@ -584,6 +607,8 @@ function Launcher({
   const choose = (id: string) => {
     setPid(id);
     setParams({});
+    setSession(sessionDefaults(profiles.find((p) => p.id === id)));
+    setMode("sequential");
     setSize(
       profiles.find((p) => p.id === id)?.sizes?.includes("standard")
         ? "standard"
@@ -611,7 +636,15 @@ function Launcher({
           : p?.spec?.categories?.length * p?.spec?.config?.runs_per_category;
   const submission = useRef({ payload: "", key: "" });
   const launch = async () => {
-    const payload = JSON.stringify({ targets, pid, size, params, mode, note });
+    const payload = JSON.stringify({
+      targets,
+      pid,
+      size,
+      params,
+      mode,
+      note,
+      session,
+    });
     if (submission.current.payload !== payload)
       submission.current = {
         payload,
@@ -630,6 +663,8 @@ function Launcher({
         mode: targets.length > 1 ? mode : "sequential",
         note,
         idempotency_key: submission.current.key,
+        ...(isSession(p) ? session : {}),
+        ...(qualification ? { qualification: true } : {}),
       });
       submitted(r);
     } catch (e) {
@@ -645,6 +680,7 @@ function Launcher({
         size,
         overrides: params,
         name: customName,
+        ...(isSession(p) ? session : {}),
       });
       profileSaved(r);
       setPid(r.id);
@@ -730,7 +766,14 @@ function Launcher({
       <div className="bs-grid" style={{ marginTop: 12 }}>
         {profiles
           .filter((p) =>
-            ["coding", "coding-checks", "repository-tasks"].includes(p.id),
+            [
+              "coding-sessions",
+              "vision-checks",
+              "visual-design",
+              "coding",
+              "coding-checks",
+              "repository-tasks",
+            ].includes(p.id),
           )
           .map((q) => (
             <button
@@ -763,21 +806,23 @@ function Launcher({
             ))}
           </select>
         </label>
-        <label className="bs-field">
-          Test size
-          <select
-            aria-label="Test size"
-            value={size}
-            onChange={(e) => setSize(e.target.value)}
-          >
-            {(p?.sizes || ["standard"]).map((s: string) => (
-              <option key={s}>{s}</option>
-            ))}
-          </select>
-          <small>
-            {count} {p?.family === "speed" ? "measured samples" : "tasks"}
-          </small>
-        </label>
+        {!isSession(p) && (
+          <label className="bs-field">
+            Test size
+            <select
+              aria-label="Test size"
+              value={size}
+              onChange={(e) => setSize(e.target.value)}
+            >
+              {(p?.sizes || ["standard"]).map((s: string) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+            <small>
+              {count} {p?.family === "speed" ? "measured samples" : "tasks"}
+            </small>
+          </label>
+        )}
         <label className="bs-field">
           Reasoning
           <select
@@ -801,6 +846,20 @@ function Launcher({
           </select>
         </label>
       </div>
+      {isSession(p) && (
+        <SessionOptions
+          profile={p!}
+          value={session}
+          onChange={(value) => {
+            if (value.difficulty !== session.difficulty)
+              setParams((old) => ({
+                ...old,
+                ...p!.tier_budgets[value.difficulty],
+              }));
+            setSession(value);
+          }}
+        />
+      )}
       <div className="bs-form-grid two">
         <label className="bs-field">
           Run note
@@ -822,7 +881,9 @@ function Launcher({
               <option value="sequential">
                 Sequential · isolated comparison
               </option>
-              <option value="parallel">Simultaneous · shared load</option>
+              {!isSession(p) && (
+                <option value="parallel">Simultaneous · shared load</option>
+              )}
             </select>
           </label>
         )}
@@ -906,9 +967,11 @@ function Launcher({
           </div>
         </div>
       </details>
-      {p?.family === "agent" && (
+      {(p?.family === "agent" || p?.family === "session") && (
         <div className="bs-alert">
-          Repository tasks use a fixed local subset and a bounded agent budget.
+          {p?.family === "session"
+            ? "Sessions use isolated applications and a bounded active-time budget."
+            : "Repository tasks use a fixed local subset and a bounded agent budget."}
           They can take up to {values.task_timeout / 60} minutes per task.
         </div>
       )}
@@ -926,7 +989,20 @@ function Launcher({
         </div>
         <Button
           primary
-          disabled={busy || !targets.length || unsupported || !p}
+          disabled={
+            busy ||
+            !targets.length ||
+            unsupported ||
+            !p ||
+            (isSession(p) &&
+              p?.preparation?.ready === false &&
+              !(qualification && p?.preparation?.prepared)) ||
+            (p?.requires_vision &&
+              selected.some(
+                (m) =>
+                  !(m.vision || m.resolved?.metadata?.capabilities?.vision),
+              ))
+          }
           onClick={launch}
         >
           {busy ? <LoaderCircle size={16} /> : <Play size={16} />}Queue
@@ -981,7 +1057,7 @@ function RunDetail({
       </button>
       <div className="bs-heading">
         <div className="bs-inline">
-          <h1>{r.profile_spec?.name || r.profile}</h1>
+          <h1>{runName(r)}</h1>
           <Pill status={r.status} />
         </div>
         <div className="bs-inline">
@@ -1059,50 +1135,59 @@ function RunDetail({
           </button>
         ))}
       </div>
-      <div className="bs-stats">
-        <section className="bs-surface">
-          <span className="bs-small">
-            {prefill
-              ? "Prompt throughput"
-              : speed
-                ? "Weighted throughput"
-                : r.family === "agent"
-                  ? "Tasks resolved"
-                  : "Coding pass rate"}
-          </span>
-          <div className="bs-big">
-            {fmt(s.score)}
-            <small> {s.unit}</small>
-          </div>
-          <span className="bs-small">
-            {s.score_label || "Completed runs only"}
-            {s.delta != null
-              ? ` · ${s.delta >= 0 ? "+" : ""}${fmt(s.delta)} ${s.delta_unit} vs baseline`
-              : ""}
-          </span>
-        </section>
-        <section className="bs-surface">
-          <span className="bs-small">
-            {speed ? "Measured samples" : "Tasks passed"}
-          </span>
-          <div className="bs-big">
-            {speed ? fmt(s.count, 0) : fmt(s.passed, 0)}
-            {!speed && <small> / {s.count ?? "—"}</small>}
-          </div>
-          <span className="bs-small">
-            {speed ? "Raw measurements retained" : "One attempt per task"}
-          </span>
-        </section>
-        <section className="bs-surface">
-          <span className="bs-small">Duration</span>
-          <div className="bs-big" style={{ fontSize: 28 }}>
-            {elapsed(r)}
-          </div>
-          <span className="bs-small">
-            {label(t)} · {r.profile_spec?.size || "standard"}
-          </span>
-        </section>
-      </div>
+      {isSession(r.profile_spec) ? (
+        <SessionDetail run={r} summary={s} target={t} />
+      ) : (
+        <div className="bs-stats">
+          <section className="bs-surface">
+            <span className="bs-small">
+              {prefill
+                ? "Prompt throughput"
+                : speed
+                  ? "Weighted throughput"
+                  : r.family === "agent"
+                    ? "Tasks resolved"
+                    : s.score_label || "Coding pass rate"}
+            </span>
+            <div className="bs-big">
+              {fmt(s.score)}
+              <small> {s.unit}</small>
+            </div>
+            <span className="bs-small">
+              {s.score_label || "Completed runs only"}
+              {s.delta != null
+                ? ` · ${s.delta >= 0 ? "+" : ""}${fmt(s.delta)} ${s.delta_unit} vs baseline`
+                : ""}
+            </span>
+          </section>
+          <section className="bs-surface">
+            <span className="bs-small">
+              {speed ? "Measured samples" : "Tasks passed"}
+            </span>
+            <div className="bs-big">
+              {speed ? fmt(s.count, 0) : fmt(s.passed, 0)}
+              {!speed && <small> / {s.count ?? "—"}</small>}
+            </div>
+            <span className="bs-small">
+              {speed
+                ? "Raw measurements retained"
+                : isSession(r.profile_spec)
+                  ? `${r.profile_spec.repetitions} repetitions per task`
+                  : "One attempt per task"}
+            </span>
+          </section>
+          <section className="bs-surface">
+            <span className="bs-small">Duration</span>
+            <div className="bs-big" style={{ fontSize: 28 }}>
+              {elapsed(r)}
+            </div>
+            <span className="bs-small">
+              {label(t)} ·{" "}
+              {r.profile_spec?.difficulty || r.profile_spec?.size || "standard"}
+            </span>
+          </section>
+        </div>
+      )}
       <div className="bs-detail-grid">
         <section className="bs-surface">
           <h3>
@@ -1110,7 +1195,9 @@ function RunDetail({
               ? "Context-depth curve"
               : speed
                 ? "By workload"
-                : "By language"}
+                : isSession(r.profile_spec)
+                  ? "By task"
+                  : "By language"}
           </h3>
           {chart.length ? (
             <div className="chart">
@@ -1262,7 +1349,7 @@ function RunDetail({
           </div>
         </section>
       )}
-      {tab === "outcomes" && (
+      {tab === "outcomes" && !isSession(r.profile_spec) && (
         <div className="bs-table-wrap" style={{ marginTop: 18 }}>
           <table>
             <thead>
@@ -1382,7 +1469,7 @@ function Comparison({
             <option value="">Select a run</option>
             {eligible.map((x) => (
               <option key={x.id} value={x.id}>
-                {x.profile_spec?.name || x.profile} · {date(x.created_at)}
+                {runName(x)} · {date(x.created_at)}
               </option>
             ))}
           </select>
@@ -1438,6 +1525,7 @@ function Comparison({
       </div>
       {data && (
         <>
+          {data.paired && <SessionComparison paired={data.paired} />}
           <div className="bs-compare-grid">
             {[data.a, data.b].map((s: Obj, i: number) => (
               <div

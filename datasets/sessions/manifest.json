@@ -1,0 +1,233 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "issues-small",
+      "app": "issue-tracker",
+      "difficulty": "small",
+      "title": "Issue filtering and empty states",
+      "requirements": "Add a labeled Status filter (All, Open, Closed) and Search field to the issue list. Combine the filters, case-insensitively match titles, show the visible issue count, and show No matching issues with a Reset filters button when empty. Reset restores all issues. Keep existing issue creation working.",
+      "visual": "Build a clickable issue-list prototype with status and text filters, a visible count, an empty state and Reset filters. Include desktop and mobile layouts.",
+      "checks": [
+        "filters",
+        "empty state",
+        "reset",
+        "regression"
+      ]
+    },
+    {
+      "id": "inventory-small",
+      "app": "inventory",
+      "difficulty": "small",
+      "title": "Inventory sorting and stock indicators",
+      "requirements": "Add a labeled Sort by control with Name, Stock ascending, Stock descending to inventory. Sort without losing records. Add In stock or Low stock to every row; quantities below 5 are Low stock. Keep inventory creation working.",
+      "visual": "Build an inventory table prototype with Name, Stock ascending and Stock descending sorting, and visible In stock/Low stock badges. Quantities below 5 are Low stock. Support desktop and mobile.",
+      "checks": [
+        "sorting",
+        "stock indicators",
+        "regression"
+      ]
+    },
+    {
+      "id": "issues-medium",
+      "app": "issue-tracker",
+      "difficulty": "medium",
+      "title": "Persistent default assignee",
+      "requirements": "Add GET and PUT /api/settings with default_assignee (trimmed nonempty text, at most 80 characters). Persist it in SQLite. Add a Default assignee input and Save settings button with saved/error feedback. Newly created issues without an explicit assignee inherit the setting; explicit assignees take precedence. Existing issues stay unchanged. Display assignees in the UI; validate invalid settings with HTTP 422.",
+      "visual": "Prototype a Default assignee settings control with Save settings, validation and saved feedback. New local issues inherit the saved assignee; existing issues remain unchanged. Include the issue creation interaction.",
+      "checks": [
+        "settings persistence",
+        "inheritance",
+        "validation",
+        "UI feedback"
+      ]
+    },
+    {
+      "id": "inventory-medium",
+      "app": "inventory",
+      "difficulty": "medium",
+      "title": "Persistent reorder thresholds",
+      "requirements": "Add a nonnegative integer reorder_threshold to each inventory item, default 5. GET /api/items returns it; PUT /api/items/{id}/threshold updates it using {reorder_threshold: integer}. Persist to SQLite, reject negative/fractional input with HTTP 422 and missing item with 404. Add per-item Reorder threshold inputs and Save threshold buttons. Show Low stock when quantity is strictly below the saved threshold, otherwise In stock. Preserve existing items across schema migration.",
+      "visual": "Prototype per-item Reorder threshold inputs, Save threshold feedback and stock indicators. Reject negative and fractional values. Badges change only after saving. Include desktop and mobile layouts.",
+      "checks": [
+        "migration",
+        "persistence",
+        "validation",
+        "stock state"
+      ]
+    },
+    {
+      "id": "issues-large",
+      "app": "issue-tracker",
+      "difficulty": "large",
+      "title": "Configurable workflow board",
+      "requirements": "Add persistent workflow columns and an issue board. GET/POST /api/columns list/create columns using {name}; initialize Open and Closed. New names are trimmed, nonempty, unique, at most 60 characters (invalid 422, duplicate 409). Add column_id to issues with a migration preserving existing issues/status. PUT /api/issues/{id}/move accepts {column_id}; validate issue and column (404), update atomically and record from/to/timestamp in GET /api/issues/{id}/history. Moving to the same column is a no-op. UI: Column name, Add column, per-issue Move to select and Move button, and Show history. Display issues grouped by column. Add tests and documentation. History events use from_column, to_column, and created_at fields. Give the displayed history the accessible label Transition history and render timestamps as ISO dates. Name each workflow region for its column.",
+      "visual": "Build a multi-screen issue workflow prototype: configurable columns, grouped issue cards, Move to controls, transition history and empty columns. Local changes persist during the preview session. Include mobile navigation and desktop board layout. Use Board and History navigation buttons; Show history opens the History screen.",
+      "checks": [
+        "migration",
+        "column validation",
+        "atomic transitions",
+        "history",
+        "board interactions"
+      ]
+    },
+    {
+      "id": "inventory-large",
+      "app": "inventory",
+      "difficulty": "large",
+      "title": "Purchase orders and receiving",
+      "requirements": "Add GET/POST /api/orders with {supplier, lines:[{item_id, quantity}]}; supplier trimmed nonempty at most 80 characters; at least one line; positive integer quantities; unique, existing item IDs. Invalid 422, missing item 404. Store orders and lines in SQLite, initially open. POST /api/orders/{id}/receive atomically increases item quantities, marks received and records timestamp; missing order 404, repeated receipt 409 with no stock change. GET /api/orders/{id}/history returns receipt history. UI: Supplier input, per-item Order quantity inputs, Create order, Receive order buttons, order status and history. Preserve preexisting inventory, add tests and documentation. History events include created_at. Give the displayed history the accessible label Receipt history and render timestamps as ISO dates.",
+      "visual": "Build a multi-screen purchase-order prototype: supplier and line quantities, validation, order creation, receiving, inventory updates and receipt history. Receiving twice must not change stock. Support desktop and mobile navigation. Use Orders, Inventory, and History navigation buttons; Show history opens the History screen.",
+      "checks": [
+        "order validation",
+        "persistence",
+        "atomic receiving",
+        "duplicate receipt",
+        "history",
+        "UI flow"
+      ]
+    }
+  ],
+  "vision_checks": [
+    {
+      "id": "text-1",
+      "category": "text",
+      "title": "Invoice total",
+      "image": "screenshots/text-1.png",
+      "prompt": "Read the invoice total. Reply with JSON {\"answer\":\"value\"}; include only the amount including the currency symbol.",
+      "answer": "$1,248.50",
+      "image_sha256": "8e67598e76d6e9fe5e0c45cf2996b481b2845d8f8d54eeae8d86f4a7133fe706",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "text-2",
+      "category": "text",
+      "title": "Issue identifier",
+      "image": "screenshots/text-2.png",
+      "prompt": "Read the issue identifier. Reply with JSON {\"answer\":\"value\"}.",
+      "answer": "OPS-407",
+      "image_sha256": "355a13fd778afb611de50e01d3345a13fd929c2815b418ee07139a3cbbda42db",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "text-3",
+      "category": "text",
+      "title": "Stock count",
+      "image": "screenshots/text-3.png",
+      "prompt": "How many units are available? Reply with JSON {\"answer\":\"number\"}.",
+      "answer": "38",
+      "image_sha256": "8d8d86136e5d57bd69140bdb53804ab6c6c6562445b8a8a70a51cf2b84d87fb0",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "text-4",
+      "category": "text",
+      "title": "Deployment date",
+      "image": "screenshots/text-4.png",
+      "prompt": "Read the deployment date. Reply with JSON {\"answer\":\"YYYY-MM-DD\"}.",
+      "answer": "2026-09-18",
+      "image_sha256": "62028665e4f2466e822f5143208df795fc6f82820ac6c74f04e59f04175f720a",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "state-1",
+      "category": "state",
+      "title": "Selected tab",
+      "image": "screenshots/state-1.png",
+      "prompt": "Which tab is selected: Overview, Activity, or Settings? Reply with JSON {\"answer\":\"tab name\"}.",
+      "answer": "Activity",
+      "image_sha256": "53de4fa721bafee5c8a4d7a1da0812131c5a3f9f48f6bac899aeff83a1150a56",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "state-2",
+      "category": "state",
+      "title": "Save availability",
+      "image": "screenshots/state-2.png",
+      "prompt": "Is the Save button enabled or disabled? Reply with JSON {\"answer\":\"enabled or disabled\"}.",
+      "answer": "disabled",
+      "image_sha256": "420a79ee477aa7361dd463baf7560c51b688d6a5ae1a7f5795b0b7af3792418f",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "state-3",
+      "category": "state",
+      "title": "Toggle state",
+      "image": "screenshots/state-3.png",
+      "prompt": "Is Notifications on or off? Reply with JSON {\"answer\":\"on or off\"}.",
+      "answer": "on",
+      "image_sha256": "f73ba57c7f840cc622a3818c1f4014e1bff046026344cac39eba037e57b93891",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "state-4",
+      "category": "state",
+      "title": "Selected filter",
+      "image": "screenshots/state-4.png",
+      "prompt": "Which status filter is selected: All, Open, or Closed? Reply with JSON {\"answer\":\"filter name\"}.",
+      "answer": "Closed",
+      "image_sha256": "8ff6ca9601acb9c796be4e97f3ebf616ebcdddefe4c0914548e753878f2248e4",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "layout-1",
+      "category": "layout",
+      "title": "Overlapping controls",
+      "image": "screenshots/layout-1.png",
+      "prompt": "Classify the layout problem: overlap, clipping, overflow, or none. Reply with JSON {\"answer\":\"classification\"}.",
+      "answer": "overlap",
+      "image_sha256": "446b56a2ece3924176329ae9b99ceed2eb2ec4168800cb4823bff66cdabc2d99",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "layout-2",
+      "category": "layout",
+      "title": "Clipped heading",
+      "image": "screenshots/layout-2.png",
+      "prompt": "Classify the layout problem: overlap, clipping, overflow, or none. Reply with JSON {\"answer\":\"classification\"}.",
+      "answer": "clipping",
+      "image_sha256": "b573122b6fa4a113044ccc9d9e5e0f6edb32d8e92ea170121cfbb96da72aaec3",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "layout-3",
+      "category": "layout",
+      "title": "Horizontal overflow",
+      "image": "screenshots/layout-3.png",
+      "prompt": "Classify the layout problem: overlap, clipping, overflow, or none. Reply with JSON {\"answer\":\"classification\"}.",
+      "answer": "overflow",
+      "image_sha256": "b5ba1f52fe6c20cb9a007eeb207de426499885fdf0f7765533e48fa9585bbb74",
+      "width": 960,
+      "height": 640
+    },
+    {
+      "id": "layout-4",
+      "category": "layout",
+      "title": "Intact layout",
+      "image": "screenshots/layout-4.png",
+      "prompt": "Classify the layout problem: overlap, clipping, overflow, or none. Reply with JSON {\"answer\":\"classification\"}.",
+      "answer": "none",
+      "image_sha256": "a61f885ca4a73c8dc75b7ca25ede3b66bbe2b0aa5eeae663ef2d0987ef941204",
+      "width": 960,
+      "height": 640
+    }
+  ],
+  "screenshot_renderer": {
+    "browser": "145.0.7632.6",
+    "viewport": {
+      "width": 960,
+      "height": 640
+    },
+    "device_scale_factor": 1
+  }
+}

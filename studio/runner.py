@@ -22,6 +22,7 @@ from . import config, db, results, generation
 
 MANAGED = "io.bench-studio.run"
 STOP = False
+ROLLOUT = None
 
 
 def docker(*args, check=True):
@@ -62,7 +63,14 @@ def record(m):
 
 
 def host_evidence(snap):
-    evidence = {"collected_at": now(), "engine_args": {}, "backend_defaults": {}}
+    from .session_catalog import vision_support
+
+    evidence = {
+        "collected_at": now(),
+        "engine_args": {},
+        "backend_defaults": {},
+        "vision": {},
+    }
     for service in snap["runtime"]["services"]:
         d = inspect(service["container_name"])
         evidence["engine_args"][service["model"]] = (
@@ -75,6 +83,34 @@ def host_evidence(snap):
             ).get("default_generation_settings", {})
         except Exception as e:
             evidence["backend_defaults"][alias] = {"unavailable": str(e)}
+    for row in snap["models"].get("data", []):
+        meta = row.get("x_ollama_router", {})
+        canonical = meta.get("upstream_model", row["id"])
+        args = evidence["engine_args"].get(canonical) or []
+
+        def argument(key):
+            if key in args and args.index(key) + 1 < len(args):
+                return args[args.index(key) + 1]
+            return next(
+                (v.split("=", 1)[1] for v in args if v.startswith(key + "=")), None
+            )
+
+        value = {
+            "advertised": vision_support(meta),
+            "input_modalities": meta.get("input_modalities"),
+            "projector_path": argument("--mmproj"),
+            "projector_revision": meta.get("mmproj_revision"),
+            "projector_sha256": meta.get("mmproj_sha256"),
+            "offload": "cpu"
+            if "--no-mmproj-offload" in args
+            else meta.get("mmproj_offload"),
+            "device": argument("--mmproj-device"),
+            "image_min_tokens": argument("--image-min-tokens"),
+            "image_max_tokens": argument("--image-max-tokens"),
+            "encoder_latency_ms": None,
+        }
+        for key in [row["id"], *meta.get("aliases", [])]:
+            evidence["vision"][key] = value
     controller = inspect("bench-studio-runner")
     evidence["runner_image"] = controller.get("Image") if controller else None
     for role, image in [
@@ -105,7 +141,7 @@ def create_worker(m, role, command, *, target=None, image=None, network="bridge"
         "--name",
         name,
         "--label",
-        f'{MANAGED}={m["id"]}',
+        f"{MANAGED}={m['id']}",
         "--label",
         "io.service-portal.hidden=true",
         "--init",
@@ -153,6 +189,10 @@ def create_worker(m, role, command, *, target=None, image=None, network="bridge"
 
 
 def stop_owned(m):
+    if m.get("family") in {"session", "vision"}:
+        from .session_runner import stop
+
+        stop(m)
     if m.get("family") == "agent":
         from .agent import stop_agent
 
@@ -166,7 +206,7 @@ def stop_owned(m):
         ):
             docker("stop", "--time", "10", name)
     # Agent environments are labelled by our Harbor environment adapter.
-    ids = docker("ps", "-q", "--filter", f'label={MANAGED}={m["id"]}').stdout.split()
+    ids = docker("ps", "-q", "--filter", f"label={MANAGED}={m['id']}").stdout.split()
     if ids:
         docker("stop", "--time", "10", *ids)
 
@@ -180,13 +220,21 @@ def finish(m, status, error=None):
     if error:
         m["error"] = str(error)
     for t in m.get("requested_targets", []):
-        m.setdefault("targets", {}).setdefault(t, {}).update(status=status, phase="finished")
+        m.setdefault("targets", {}).setdefault(t, {}).update(
+            status=status, phase="finished"
+        )
     record(m)
     atomic_json(config.DATA / "runs" / m["id"] / "studio-manifest.json", m)
-    log(m, f'{status.upper()}: {error or "Results saved"}')
+    log(m, f"{status.upper()}: {error or 'Results saved'}")
+    if status == "completed" and m.get("family") in {"session", "vision"}:
+        from .session_catalog import qualify_run
+
+        qualify_run(m)
 
 
 def start(m, snap):
+    from datetime import datetime
+
     path = config.DATA / "runs" / m["id"]
     path.mkdir(parents=True, exist_ok=True)
     m.update(
@@ -197,13 +245,24 @@ def start(m, snap):
         workers={},
         progress="Preparing benchmark",
     )
+    m["queue_seconds"] = max(
+        0,
+        (
+            datetime.fromisoformat(m["started_at"])
+            - datetime.fromisoformat(m["created_at"])
+        ).total_seconds(),
+    )
     if m["family"] == "quality" and not m["host"].get("verifier_image"):
         raise RuntimeError("The pinned coding verifier image is unavailable")
     m["generation"] = generation.snapshot(m)
     atomic_json(path / "manifest.json", m)
     record(m)
     log(m, "Starting " + m["profile"] + " / " + m["mode"])
-    if m["family"] == "agent":
+    if m["family"] in {"session", "vision"}:
+        from .session_runner import launch
+
+        launch(m)
+    elif m["family"] == "agent":
         from .agent import launch_agent
 
         launch_agent(m)
@@ -214,7 +273,7 @@ def start(m, snap):
             else "/app/studio/quality_worker.py"
         )
         create_worker(
-            m, "generate", ["python", module, f'/data/runs/{m["id"]}/manifest.json']
+            m, "generate", ["python", module, f"/data/runs/{m['id']}/manifest.json"]
         )
     m["status"] = "running"
     record(m)
@@ -223,6 +282,7 @@ def start(m, snap):
 def check_current(m):
     from common import RuntimeUnavailable, check_drift
     from urllib.error import URLError
+
     try:
         snap = snapshot(config.SETTINGS)
         # Validate every identity before readiness; an unhealthy peer must not hide drift.
@@ -232,10 +292,14 @@ def check_current(m):
             resolve(snap, t)
     except (RuntimeUnavailable, URLError, TimeoutError) as exc:
         first = m.setdefault("health_unavailable_since", time.time())
-        m["health_warning"] = f"Runtime readiness check failed; allowing up to 90s to recover without replaying requests: {exc}"
+        m["health_warning"] = (
+            f"Runtime readiness check failed; allowing up to 90s to recover without replaying requests: {exc}"
+        )
         record(m)
         if time.time() - first >= 90:
-            raise RuntimeUnavailable("Runtime readiness failed for 90s: " + str(exc)) from exc
+            raise RuntimeUnavailable(
+                "Runtime readiness failed for 90s: " + str(exc)
+            ) from exc
         return None
     m.pop("health_unavailable_since", None)
     m.pop("health_warning", None)
@@ -260,6 +324,14 @@ def poll(m):
         record(m)
         stop_owned(m)
         finish(m, "cancelled", "Stopped by user; partial artifacts retained")
+        return
+    if m["family"] in {"session", "vision"}:
+        from .session_runner import poll as poll_session
+
+        # Waiting sessions hold no inference reservation. Identity is rechecked at resume.
+        if m["status"] not in db.WAITING:
+            check_current(m)
+        poll_session(m)
         return
     check_current(m)
     if m["family"] == "agent":
@@ -294,7 +366,7 @@ def poll(m):
             log(m, (tail.stdout + tail.stderr)[-6000:])
             raise RuntimeError(
                 m.get("error")
-                or f'{info["role"]} worker exited {state["State"]["ExitCode"]}'
+                or f"{info['role']} worker exited {state['State']['ExitCode']}"
             )
     if not all_done:
         record(m)
@@ -335,7 +407,7 @@ def cycle():
     db.set_state(
         "runner", {"updated_at": now(), "revision": config.REVISION, "pid": os.getpid()}
     )
-    active = [m for m in db.runs() if m["status"] in db.ACTIVE]
+    active = [m for m in db.runs() if m["status"] in db.ACTIVE | db.WAITING]
     for m in active:
         try:
             poll(m)
@@ -350,16 +422,31 @@ def cycle():
                 else ("interrupted" if "disappeared" in str(e) else "failed")
             )
             finish(m, state, e)
-    if active or (config.DATA / ".maintenance").exists():
+    if (
+        STOP
+        or any(m["status"] in db.ACTIVE for m in db.runs())
+        or (config.DATA / ".maintenance").exists()
+    ):
+        return
+    if ROLLOUT and ROLLOUT.tick():
         return
     queued = sorted(
-        (m for m in db.runs() if m["status"] == "queued"), key=lambda m: m["created_at"]
+        (m for m in db.runs() if m["status"] in {"queued", "resume_queued"}),
+        key=lambda m: (m["status"] != "resume_queued", m["created_at"]),
     )
     if not queued:
         return
     m = queued[0]
     try:
         if m.get("revision", config.REVISION) != config.REVISION:
+            if m["status"] == "resume_queued":
+                stop_owned(m)
+                finish(
+                    m,
+                    "interrupted",
+                    "Application changed during review; session evidence retained",
+                )
+                return
             m.update(
                 status="blocked",
                 progress="Application version changed while queued. Review and run again.",
@@ -369,6 +456,14 @@ def cycle():
         snap = snapshot(config.SETTINGS)
         for t in m["requested_targets"]:
             if identity(resolve(snap, t)) != identity(m["resolved"][t]):
+                if m["status"] == "resume_queued":
+                    stop_owned(m)
+                    finish(
+                        m,
+                        "invalid",
+                        "Model/runtime configuration changed during review",
+                    )
+                    return
                 m.update(
                     status="blocked",
                     progress="Selected model or configuration changed. Review and run again.",
@@ -391,7 +486,19 @@ def cycle():
             current = db.unpack(
                 c.execute("SELECT document FROM runs WHERE id=?", (m["id"],)).fetchone()
             )
-            if current["status"] != "queued" or (config.DATA / ".maintenance").exists():
+            if (
+                STOP
+                or current["status"] not in {"queued", "resume_queued"}
+                or (config.DATA / ".maintenance").exists()
+            ):
+                return
+            if current["status"] == "resume_queued":
+                current.update(
+                    status="running",
+                    resume_review=current["pending_review"],
+                    progress="Resuming after review",
+                )
+                db.update_run(current, c=c)
                 return
             m["status"] = "starting"
             db.update_run(m, c=c)
@@ -401,17 +508,53 @@ def cycle():
             finish(m, "failed", e)
 
 
+def request_shutdown(*_):
+    global STOP
+    STOP = True
+
+
+def shutdown_sessions():
+    for m in db.runs():
+        if (
+            m.get("family") in {"session", "vision"}
+            and m["status"] in db.ACTIVE | db.WAITING
+        ):
+            try:
+                stop_owned(m)
+                finish(
+                    m,
+                    "interrupted",
+                    "Controller stopped; session evidence retained without replay",
+                )
+            except Exception as exc:
+                log(m, "Session shutdown cleanup failed: " + str(exc))
+
+
 def main():
+    global ROLLOUT
     db.initialize()
     results.import_legacy()
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
     with (config.DATA / ".runner.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        while True:
+        if config.SESSION_AUTO_SETUP:
+            from .session_setup import SessionSetup
+
+            ROLLOUT = SessionSetup()
+        try:
+            while not STOP:
+                try:
+                    cycle()
+                except Exception as e:
+                    print("Controller error:", e, flush=True)
+                time.sleep(3)
+        finally:
             try:
-                cycle()
-            except Exception as e:
-                print("Controller error:", e, flush=True)
-            time.sleep(3)
+                if ROLLOUT:
+                    ROLLOUT.stop()
+            finally:
+                shutdown_sessions()
 
 
 if __name__ == "__main__":
