@@ -244,20 +244,18 @@ def render_index(root):
         )
     body = (
         "".join(rows)
-        or '<tr><td colspan="4">No runs yet. Start one using the SSH commands below.</td></tr>'
+        or '<tr><td colspan="4">No runs yet. Start one in Bench Studio or use the commands below.</td></tr>'
     )
     page = (
         """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <meta http-equiv="refresh" content="15"><title>BetterBench · Rosalina</title>
+    <meta http-equiv="refresh" content="15"><title>BetterBench · Historical index</title>
     <style>:root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:1200px;margin:40px auto;padding:0 24px}h1{margin-bottom:8px}p{line-height:1.6;color:light-dark(#495263,#b8c1d0)}table{width:100%;border-collapse:collapse;margin:26px 0}th,td{text-align:left;vertical-align:top;padding:14px 12px;border-bottom:1px solid #8885}small{display:block;margin-top:7px;max-width:470px;overflow-wrap:anywhere;opacity:.8}a{color:light-dark(#1756bf,#9dbdff)}code,pre{font-family:ui-monospace,monospace;font-size:13px}pre{padding:18px;background:#8881;border:1px solid #8884;border-radius:8px;overflow:auto}.good{color:light-dark(#137443,#74d49f)}.bad{color:light-dark(#b02929,#ff9999)}.active{color:light-dark(#73530c,#f5d485)}@media(max-width:700px){body{padding:0 10px}th,td{padding:10px 5px}code{font-size:11px}}</style>
-    <h1>BetterBench</h1><p>Local inference performance on Rosalina. Reports measure speed and latency, not answer correctness.
-    Smoke runs are installation checks. The page refreshes every 15 seconds; use SSH for live status, logs and stopping.</p>
+    <h1>BetterBench</h1><p>Local inference performance. Reports measure speed and latency, not answer correctness.
+    Smoke runs are installation checks. The page refreshes every 15 seconds; use Bench Studio or its CLI for live status, logs and stopping.</p>
     <table><thead><tr><th>Run</th><th>Workload</th><th>Status</th><th>Results</th></tr></thead><tbody>"""
         + body
         + """</tbody></table>
-    <h2>Run a benchmark</h2><pre>ssh astigmatism@192.168.1.21
-    cd ~/apps/betterbench
-    ./bench models
+    <h2>Run a benchmark</h2><pre>./bench models
     ./bench run daytime --profile coding
     ./bench run nighttime --profile standard
     ./bench run both --profile smoke
