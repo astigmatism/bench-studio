@@ -335,5 +335,11 @@
       "HumanEval_162_string_to_md5",
       "HumanEval_163_generate_integers"
     ]
+  },
+  "adapter_version": 2,
+  "exclusions": {
+    "typescript": {
+      "HumanEval_92_any_int": "Contradictory translated tests require different results for (3,4,7) and (3.0,4,7), identical JavaScript inputs."
+    }
   }
 }

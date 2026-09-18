@@ -155,6 +155,10 @@ def launch(body: Launch):
     ):
         raise ValueError("Targets must use distinct backends")
     for r in selected.values():
+        if profile["parameters"].get("reasoning_budget_tokens") is not None:
+            levels = r["metadata"].get("reasoning", {}).get("per_effort", {})
+            if not any("reasoning_budget_tokens" in v for v in levels.values() if isinstance(v, dict)):
+                raise ValueError("Selected endpoint does not advertise reasoning-budget support")
         limit = profile["parameters"].get("max_tokens")
         if limit and limit + r["reserve"] + 2048 >= r["context"]:
             raise ValueError("Output budget exceeds available context")

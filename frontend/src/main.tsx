@@ -832,13 +832,34 @@ function Launcher({
         <div className="bs-form-grid">
           {Object.keys(p?.parameters || {})
             .filter((k) => k !== "reasoning_effort")
+            .filter(
+              (k) =>
+                k !== "reasoning_budget_tokens" ||
+                (targets.length > 0 &&
+                  targets.every((t) =>
+                    Object.values(
+                      models.find((m) => m.alias === t)?.reasoning
+                        ?.per_effort || {},
+                    ).some((v: any) => v.reasoning_budget_tokens !== undefined),
+                  )),
+            )
             .map((k) => (
               <label className="bs-field" key={k}>
-                {label(k.replaceAll("_", " "))}
+                {k === "max_tokens"
+                  ? "Total output tokens (thinking + answer)"
+                  : k === "reasoning_budget_tokens"
+                    ? "Thinking token limit (optional)"
+                    : label(k.replaceAll("_", " "))}
                 <input
                   type="number"
                   value={values[k] ?? ""}
-                  placeholder={k === "max_tokens" ? "Per-workload default" : ""}
+                  placeholder={
+                    k === "max_tokens"
+                      ? "Per-workload default"
+                      : k === "reasoning_budget_tokens"
+                        ? "Runtime default"
+                        : ""
+                  }
                   step={["temperature", "top_p"].includes(k) ? 0.05 : 1}
                   disabled={
                     k === "temperature" && p?.spec?.phases?.[0] === "prefill"
@@ -859,6 +880,15 @@ function Launcher({
           Context capacity is read from AI Runtime. Task selection and
           generation settings are recorded with the run.
         </div>
+        {p?.family !== "speed" && (
+          <div className="bs-alert">
+            The total output limit includes thinking. A thinking limit below it
+            leaves room for an answer. Extra-high reasoning may exhaust the
+            allowance or repeat; a larger total limit alone does not prevent
+            loops. Blank thinking limit preserves the runtime default. Neither
+            control changes your model or context configuration.
+          </div>
+        )}
         <div className="bs-form-grid two">
           <label className="bs-field">
             Save these settings as a profile
@@ -980,6 +1010,35 @@ function RunDetail({
       {r.note && <p className="bs-sub">{r.note}</p>}
       {r.error && <div className="error">{r.error}</div>}
       {r.load_warning && <div className="bs-alert">{r.load_warning}</div>}
+      {r.health_warning && <div className="bs-alert">{r.health_warning}</div>}
+      {s.validation_warning && (
+        <div className="bs-alert">{s.validation_warning}</div>
+      )}
+      {s.partial && (
+        <div className="bs-alert">
+          Partial evidence: {s.completed_count ?? 0} of {s.count} tasks
+          completed. No final score is published.
+        </div>
+      )}
+      {s.infrastructure_error && s.infrastructure_error !== r.error && (
+        <div className="error">{s.infrastructure_error}</div>
+      )}
+      {!!(s.tasks || []).filter((task: Obj) => task.finish_reason === "length")
+        .length && (
+        <div className="bs-alert">
+          {
+            (s.tasks || []).filter(
+              (task: Obj) => task.finish_reason === "length",
+            ).length
+          }{" "}
+          answers exhausted the total output budget.
+          {s.repetition_count
+            ? ` ${s.repetition_count} responses showed repetitive reasoning.`
+            : ""}{" "}
+          These are completion failures, not evidence that a finished solution
+          was incorrect.
+        </div>
+      )}
       {!terminal.has(r.status) && (
         <section
           className="bs-surface"
@@ -1239,6 +1298,28 @@ function RunDetail({
                           task.detail ||
                           task.finish_reason ||
                           "Tests completed"}
+                    {task.usage && (
+                      <div>
+                        {fmt(task.usage.completion_tokens, 0)} output tokens ·{" "}
+                        {task.finish_reason}
+                      </div>
+                    )}
+                    {task.diagnostics && (
+                      <div>
+                        {fmt(task.diagnostics.answer_chars, 0)} answer
+                        characters · {fmt(task.diagnostics.reasoning_chars, 0)}{" "}
+                        thinking characters
+                      </div>
+                    )}
+                    {task.trial_path && (
+                      <a
+                        target="_blank"
+                        rel="noreferrer"
+                        href={`/api/runs/${r.id}/artifacts/${t}/${task.trial_path}`}
+                      >
+                        Trial evidence
+                      </a>
+                    )}
                   </td>
                 </tr>
               ))}

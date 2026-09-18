@@ -9,6 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import read_json, atomic_json
+from studio.diagnostics import output_diagnostics
+from studio.typescript import evaluate as evaluate_typescript
 
 
 def extract(response):
@@ -93,26 +95,32 @@ def main(root):
             )
     for task in tasks:
         r = responses[task["id"]]
+        diagnostics = output_diagnostics(r)
         detail = ""
-        if task["language"] == "python":
+        failure_kind = None
+        if diagnostics["output_exhausted"] or not diagnostics["answer_chars"]:
+            passed = False
+            failure_kind = diagnostics["failure_kind"]
+            detail = ("Output budget exhausted" if diagnostics["output_exhausted"] else "No final answer")
+            if not diagnostics["answer_chars"]:
+                detail += "; no final code returned"
+            if diagnostics["repetition_detected"]:
+                detail += "; repetitive reasoning detected"
+        elif task["language"] == "python":
             passed = pygrades.get(task["id"], False)
+            failure_kind = None if passed else "test_failure"
         else:
-            from eval_ts import eval_script
-
             path = Path("/tmp") / (re.sub("[^a-zA-Z0-9_]", "_", task["id"]) + ".ts")
             source = extract(r["response"])
             if not re.search(r"\bfunction\b|=>", source):
                 source = task["prompt"] + source
-            path.write_text(source + "\n" + task["tests"])
-            v = eval_script(path)
-            passed = v["status"] == "OK"
-            detail = v["status"]
+            v = evaluate_typescript(source, task["tests"])
+            passed = v["passed"]
+            detail = v["detail"]
+            failure_kind = v["failure_kind"]
             (root / (path.stem + ".test.log")).write_text(
-                (v.get("stdout", "") + "\n" + v.get("stderr", ""))[-30000:]
+                v["log"][-30000:]
             )
-        if r["finish_reason"] == "length":
-            passed = False
-            detail = "Output budget exhausted"
         rows.append(
             {
                 "id": task["id"],
@@ -123,6 +131,8 @@ def main(root):
                 or ("All tests passed" if passed else "Executable tests failed"),
                 "usage": r["usage"],
                 "finish_reason": r["finish_reason"],
+                "diagnostics": diagnostics,
+                "failure_kind": failure_kind,
             }
         )
     passed = sum(r["status"] == "passed" for r in rows)
@@ -149,6 +159,9 @@ def main(root):
             "count": len(rows),
             "tasks": rows,
             "metrics": metrics,
+            "failure_counts": {kind: sum(r.get("failure_kind") == kind for r in rows)
+                               for kind in sorted({r["failure_kind"] for r in rows if r.get("failure_kind")})},
+            "repetition_count": sum(r["diagnostics"]["repetition_detected"] for r in rows),
         },
     )
 

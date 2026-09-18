@@ -1,0 +1,9 @@
+{
+  "name": "bench-studio-verifier",
+  "private": true,
+  "version": "2.0.0",
+  "dependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "22.20.3"
+  }
+}

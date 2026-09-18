@@ -4,6 +4,7 @@ from pathlib import Path
 from betterbench.report import combined_score, single_rows, prefill_rows
 from common import read_json
 from . import config, db
+from .repository import collect_trials
 
 
 def import_legacy():
@@ -40,6 +41,12 @@ def summarize(m):
         try:
             if (root / target / "result.json").exists():
                 item.update(read_json(root / target / "result.json"))
+            elif m.get("family") == "agent":
+                tasks = m.get("repository_tasks")
+                if not tasks and (root / "manifest.json").exists():
+                    tasks = read_json(root / "manifest.json").get("repository_tasks")
+                if tasks:
+                    item.update(collect_trials(root / target, tasks, job_error=m.get("error")))
             elif (root / target / "decode.json").exists():
                 data = read_json(root / target / "decode.json")
                 rows = single_rows(data)
@@ -99,8 +106,10 @@ def summarize(m):
         except (ValueError, KeyError, IndexError, TypeError, OSError) as e:
             item["summary_error"] = str(e)
             item["score"] = None
-        if m["status"] != "completed":
+        if m["status"] != "completed" or item.get("infrastructure_error") or item.get("partial"):
             item["score"] = None
+        if m.get("family") in ["quality", "agent"] and m.get("profile_spec", {}).get("execution_adapter_version", 1) < 2:
+            item["validation_warning"] = "Historical v1 result: predates verifier and task-validation fixes. Measurements are preserved; use a v2 profile for a corrected comparison."
         result[target] = item
     return result
 
@@ -162,6 +171,7 @@ def workload(m):
         p.get("version"),
         m.get("mode", "sequential"),
         p.get("task_manifest_hash"),
+        p.get("execution_adapter_version", 1),
     )
 
 

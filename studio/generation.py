@@ -9,7 +9,7 @@ def snapshot(run):
     requested = dict(profile["parameters"])
     sent = {
         k: requested[k]
-        for k in ("temperature", "top_p", "seed", "max_tokens")
+        for k in ("temperature", "top_p", "seed", "max_tokens", "reasoning_budget_tokens")
         if requested.get(k) is not None
     }
     if requested.get("reasoning_effort") != "default":

@@ -537,7 +537,8 @@ def test_repository_preflight_rejects_unusable_verifier_before_inference(
     root = config.DATA / "repository-tasks/test-task"
     root.mkdir(parents=True)
     (root / "task.toml").write_text('[environment]\ndocker_image = "sha256:pinned"\n')
-    script = root / "test.sh"
+    (root / "tests").mkdir()
+    script = root / "tests/test.sh"
     script.write_text("#!/bin/sh\nexit 0\n")
     script.chmod(0o644)
     calls = []

@@ -179,6 +179,8 @@ def finish(m, status, error=None):
     )
     if error:
         m["error"] = str(error)
+    for t in m.get("requested_targets", []):
+        m.setdefault("targets", {}).setdefault(t, {}).update(status=status, phase="finished")
     record(m)
     atomic_json(config.DATA / "runs" / m["id"] / "studio-manifest.json", m)
     log(m, f'{status.upper()}: {error or "Results saved"}')
@@ -219,10 +221,24 @@ def start(m, snap):
 
 
 def check_current(m):
-    snap = snapshot(config.SETTINGS)
-    for t in m["requested_targets"]:
-        if identity(resolve(snap, t)) != identity(m["resolved"][t]):
-            raise RuntimeError("Model/runtime configuration changed during the run")
+    from common import RuntimeUnavailable, check_drift
+    from urllib.error import URLError
+    try:
+        snap = snapshot(config.SETTINGS)
+        # Validate every identity before readiness; an unhealthy peer must not hide drift.
+        for t in m["requested_targets"]:
+            check_drift(m["resolved"][t], resolve(snap, t, require_healthy=False))
+        for t in m["requested_targets"]:
+            resolve(snap, t)
+    except (RuntimeUnavailable, URLError, TimeoutError) as exc:
+        first = m.setdefault("health_unavailable_since", time.time())
+        m["health_warning"] = f"Runtime readiness check failed; allowing up to 90s to recover without replaying requests: {exc}"
+        record(m)
+        if time.time() - first >= 90:
+            raise RuntimeUnavailable("Runtime readiness failed for 90s: " + str(exc)) from exc
+        return None
+    m.pop("health_unavailable_since", None)
+    m.pop("health_warning", None)
     count = snap["runtime"].get("maintenance", {})
     own = sum(
         1 for w in m.get("workers", {}).values() if w["role"] in ["generate", "agent"]

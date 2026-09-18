@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import atomic_json, read_json, now, resolve, snapshot, check_drift
+from common import atomic_json, read_json, now, resolve, snapshot, check_drift, wait_for_runtime
 
 ROOT = Path("/app/datasets/cache")
 
@@ -39,6 +39,7 @@ def choose_tasks(spec):
                 for r in rows
             ]
         else:
+            excluded = spec.get("dataset_versions", {}).get("exclusions", {}).get("typescript", {})
             tasks = [
                 {
                     "id": r["name"],
@@ -48,6 +49,7 @@ def choose_tasks(spec):
                     "tests": r["tests"],
                 }
                 for r in read_json(ROOT / "typescript.json")
+                if r["name"] not in excluded
             ]
         tasks.sort(key=lambda r: hashlib.sha256(("42:" + r["id"]).encode()).hexdigest())
         result.extend(tasks[:each] if each else tasks)
@@ -80,6 +82,8 @@ def generate(endpoint, canonical, task, params, progress):
             if params["reasoning_effort"] == "off"
             else params["reasoning_effort"]
         )
+    if params.get("reasoning_budget_tokens") is not None:
+        payload["reasoning_budget_tokens"] = params["reasoning_budget_tokens"]
     answer = []
     reasoning = []
     usage = None
@@ -160,7 +164,7 @@ def main(path):
         atomic_json(out / "tasks.json", tasks)
         responses = []
         for i, task in enumerate(tasks):
-            check_drift(m["resolved"][t], resolve(snapshot(m["settings"]), t))
+            wait_for_runtime(m["settings"], t, m["resolved"][t])
 
             def progress(s):
                 with mutex:
@@ -191,7 +195,7 @@ def main(path):
             log(
                 f'[{t}] {task["id"]} generated: {r["usage"]["completion_tokens"]} tokens; {r["finish_reason"]}'
             )
-        check_drift(m["resolved"][t], resolve(snapshot(m["settings"]), t))
+        wait_for_runtime(m["settings"], t, m["resolved"][t])
 
     try:
         m["status"] = "running"

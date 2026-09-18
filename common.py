@@ -69,7 +69,11 @@ def safe_target(name):
     return "model-" + hashlib.sha256(name.encode()).hexdigest()[:20]
 
 
-def resolve(snap, target):
+class RuntimeUnavailable(RuntimeError):
+    """A readiness observation, distinct from a changed model identity."""
+
+
+def resolve(snap, target, *, require_healthy=True):
     row = next(
         (
             r
@@ -81,8 +85,10 @@ def resolve(snap, target):
     if row is None:
         raise RuntimeError(f"Model alias {target!r} is absent from discovery")
     meta = row.get("x_ollama_router", {})
-    if not meta.get("complete") or not meta.get("health", {}).get("available"):
-        raise RuntimeError(f"Model {target} has incomplete metadata or is unavailable")
+    if not meta.get("complete"):
+        raise RuntimeError(f"Model {target} has incomplete metadata")
+    if require_healthy and not meta.get("health", {}).get("available"):
+        raise RuntimeUnavailable(f"Model {target} is temporarily unavailable")
     context = meta.get("context_window")
     if not isinstance(context, int) or context <= 0:
         raise RuntimeError(f"Model {target} has no valid context window")
@@ -91,8 +97,10 @@ def resolve(snap, target):
         (s for s in snap["runtime"].get("services", []) if s["model"] == canonical),
         None,
     )
-    if not service or not service.get("healthy") or not service.get("running"):
-        raise RuntimeError(f"Runtime has no healthy service for {target}: {canonical}")
+    if not service:
+        raise RuntimeError(f"Model/runtime configuration changed during the run: missing {target}: {canonical}")
+    if require_healthy and (not service.get("healthy") or not service.get("running")):
+        raise RuntimeUnavailable(f"Runtime has no healthy service for {target}: {canonical}")
     return {
         "alias": target,
         "canonical": canonical,
@@ -143,10 +151,30 @@ def require_idle(snap, targets, *, all_services=True):
 
 
 def check_drift(before, after):
-    if identity(before) != identity(after):
+    service = after.get("service", {})
+    if (identity(before) != identity(after) or service.get("differences")
+        or any(before.get("service", {}).get(k) != service.get(k)
+               for k in ("started_at", "restart_count") if k in before.get("service", {}))):
         raise RuntimeError(
             f"Model/runtime configuration changed during the run for {before['alias']}"
         )
+
+
+def wait_for_runtime(settings, target, expected, *, timeout=90):
+    """Wait before a new request; never retry an inference request."""
+    import time
+    from urllib.error import URLError
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            snap = snapshot(settings)
+            observed = resolve(snap, target, require_healthy=False)
+            check_drift(expected, observed)
+            return resolve(snap, target)
+        except (RuntimeUnavailable, URLError, TimeoutError) as exc:
+            if time.monotonic() >= deadline:
+                raise RuntimeUnavailable(f"Runtime readiness did not recover within {timeout}s: {exc}") from exc
+            time.sleep(min(3, max(0, deadline - time.monotonic())))
 
 
 def valid_sample(row):

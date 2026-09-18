@@ -4,6 +4,8 @@ import asyncio, json, sys
 from pathlib import Path
 from common import read_json, atomic_json, now
 from . import config
+from .repository import collect_trials
+from .diagnostics import exception_message
 
 
 async def main(path):
@@ -42,6 +44,8 @@ async def main(path):
             kwargs["reasoning_effort"] = (
                 "none" if p["reasoning_effort"] == "off" else p["reasoning_effort"]
             )
+        if p.get("reasoning_budget_tokens") is not None:
+            kwargs["llm_kwargs"]["reasoning_budget_tokens"] = p["reasoning_budget_tokens"]
         cfg = {
             "job_name": m["id"] + "-" + t,
             "jobs_dir": str(out / "harbor"),
@@ -65,81 +69,28 @@ async def main(path):
                 }
             ],
             "tasks": [
-                {"path": str(config.DATA / "repository-tasks" / r["id"])}
+                {"path": str(root / "repository-tasks" / r["id"])}
                 for r in m["repository_tasks"]
             ],
         }
         atomic_json(out / "harbor-config.json", cfg)
         print(now(), t, "Starting", len(cfg["tasks"]), "repository tasks", flush=True)
-        job = await Job.create(JobConfig.model_validate(cfg))
-        await job.run()
-        from .harbor_agent import RouterLLM
-
-        if RouterLLM.infrastructure_errors:
-            raise RuntimeError(
-                "Model transport failed: "
-                + "; ".join(RouterLLM.infrastructure_errors)[:1500]
-            )
-        trials = []
-        infrastructure = []
-        for path in (out / "harbor" / cfg["job_name"]).glob("*/result.json"):
-            r = read_json(path)
-            error = r.get("exception_info")
-            reward = (r.get("verifier_result") or {}).get("rewards") or {}
-            value = reward.get("reward", 0)
-            task_id = r.get("task_name") or path.parent.name
-            match = next((x for x in m["repository_tasks"] if x["id"] in task_id), None)
-            if error and error.get("exception_type") not in [
-                "AgentTimeoutError",
-                "OutputLengthExceededError",
-                "ContextLengthExceededError",
-            ]:
-                infrastructure.append(error.get("exception_message") or str(error))
-            trials.append(
-                {
-                    "id": task_id,
-                    "language": match["language"] if match else "unknown",
-                    "status": "passed" if value == 1 and not error else "failed",
-                    "detail": (
-                        error.get("exception_type")
-                        if error
-                        else "Required tests " + ("passed" if value == 1 else "failed")
-                    ),
-                    "reward": value,
-                    "trial_path": str(path.relative_to(out)),
-                }
-            )
-        if len(trials) != len(m["repository_tasks"]):
-            raise RuntimeError("Harbor did not produce all expected trial results")
-        if infrastructure:
-            raise RuntimeError(
-                "Repository infrastructure error: " + "; ".join(infrastructure)[:1500]
-            )
-        passed = sum(x["status"] == "passed" for x in trials)
-        metrics = []
-        for lang in ["python", "typescript"]:
-            rows = [x for x in trials if x["language"] == lang]
-            if rows:
-                metrics.append(
-                    {
-                        "language": lang,
-                        "rate": 100
-                        * sum(x["status"] == "passed" for x in rows)
-                        / len(rows),
-                    }
-                )
-        atomic_json(
-            out / "result.json",
-            {
-                "score": 100 * passed / len(trials),
-                "unit": "%",
-                "metric": "resolved_rate",
-                "passed": passed,
-                "count": len(trials),
-                "tasks": trials,
-                "metrics": metrics,
-            },
-        )
+        error = None
+        try:
+            job = await Job.create(JobConfig.model_validate(cfg))
+            await job.run()
+            from .harbor_agent import RouterLLM
+            failures = RouterLLM.infrastructure_errors.get(resolved["canonical"], [])
+            if failures:
+                raise RuntimeError("Model transport failed: " + "; ".join(failures)[:2000])
+        except BaseException as exc:
+            error = exception_message(exc)
+            raise
+        finally:
+            result = collect_trials(out, m["repository_tasks"], job_error=error)
+            atomic_json(out / "result.json", result)
+        if result["partial"]:
+            raise RuntimeError(result["infrastructure_error"] or "Harbor did not produce all expected trial results")
 
     try:
         if m["mode"] == "parallel":
@@ -149,7 +100,7 @@ async def main(path):
                 await target(t)
         atomic_json(root / "agent-outcome.json", {"status": "completed"})
     except BaseException as e:
-        atomic_json(root / "agent-outcome.json", {"status": "failed", "error": str(e)})
+        atomic_json(root / "agent-outcome.json", {"status": "failed", "error": exception_message(e)})
         raise
 
 

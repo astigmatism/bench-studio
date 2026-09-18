@@ -53,7 +53,7 @@ def builtins():
                 "description": "Solutions graded by executable tests; one attempt per task.",
                 "family": "quality",
                 "engine": "EvalPlus 0.3.1 + MultiPL-E",
-                "version": 1,
+                "version": 2,
                 "builtin": True,
                 "languages": languages,
                 "parameters": {
@@ -62,6 +62,7 @@ def builtins():
                     "seed": 42,
                     "reasoning_effort": "default",
                     "max_tokens": 8192,
+                    "reasoning_budget_tokens": None,
                 },
                 "sizes": ["quick", "standard", "full"],
             }
@@ -73,7 +74,7 @@ def builtins():
             "description": "Real Python and TypeScript repository issues. Fixed local SWE-bench Pro subset.",
             "family": "agent",
             "engine": "Harbor / Terminus 2",
-            "version": 1,
+            "version": 2,
             "builtin": True,
             "languages": ["python", "typescript"],
             "parameters": {
@@ -82,6 +83,7 @@ def builtins():
                 "seed": 42,
                 "reasoning_effort": "default",
                 "max_tokens": 8192,
+                "reasoning_budget_tokens": None,
                 "max_turns": 40,
                 "task_timeout": 1800,
             },
@@ -119,7 +121,7 @@ def configure(pid, size="standard", overrides=None):
         if key == "reasoning_effort":
             if value not in ["default", "off", "low", "medium", "xhigh"]:
                 raise ValueError("Invalid reasoning effort")
-        elif value is None and key == "max_tokens" and p["family"] == "speed":
+        elif value is None and (key == "reasoning_budget_tokens" or (key == "max_tokens" and p["family"] == "speed")):
             pass
         elif isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"Invalid {key}")
@@ -127,13 +129,16 @@ def configure(pid, size="standard", overrides=None):
             raise ValueError("Temperature must be 0–2")
         elif key == "top_p" and not 0 < value <= 1:
             raise ValueError("top_p must be >0 and ≤1")
-        elif key in ["max_tokens", "max_turns", "task_timeout", "seed"]:
+        elif key in ["max_tokens", "max_turns", "task_timeout", "seed", "reasoning_budget_tokens"]:
             if not isinstance(value, int):
                 raise ValueError(f"{key} must be an integer")
             if key != "seed" and value <= 0:
                 raise ValueError(f"{key} must be positive")
     if params.get("max_tokens") and params["max_tokens"] > 65536:
         raise ValueError("Maximum output limit is 65,536")
+    thinking = params.get("reasoning_budget_tokens")
+    if thinking is not None and (thinking >= params["max_tokens"] or params["reasoning_effort"] == "off"):
+        raise ValueError("Reasoning budget requires reasoning enabled and must leave room within the total output limit for an answer")
     if params.get("max_turns", 1) > 100 or params.get("task_timeout", 1) > 3600:
         raise ValueError("Agent limit exceeds allowed budget")
     if "prefill" in p.get("spec", {}).get("phases", []) and params["temperature"] != 0:
@@ -146,6 +151,8 @@ def configure(pid, size="standard", overrides=None):
 
 
 def attach_manifest(p):
+    if p["family"] in ["quality", "agent"]:
+        p["execution_adapter_version"] = 2
     if p["family"] == "quality":
         dataset = json.loads(
             (config.ROOT / "datasets/coding-manifest.json").read_text()

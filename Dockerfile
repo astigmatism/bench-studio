@@ -69,7 +69,9 @@ FROM base AS verifier
 USER root
 COPY --from=ui /usr/local/bin/node /usr/local/bin/node
 COPY --from=ui /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && npm install -g typescript@5.9.3 --no-audit --no-fund
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+COPY verifier/package*.json /opt/bench-types/
+RUN npm ci --prefix /opt/bench-types --ignore-scripts --no-audit --no-fund
 COPY requirements-verifier.txt ./
 RUN pip install --no-cache-dir -r requirements-verifier.txt
 COPY scripts/fetch-multiple-verifier.py /tmp/fetch-multiple-verifier.py

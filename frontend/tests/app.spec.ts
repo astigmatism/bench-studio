@@ -164,3 +164,96 @@ test("narrow and dark layouts stay usable", async ({ page }) => {
     fullPage: true,
   });
 });
+
+test("failed repository runs retain partial task evidence without a headline score", async ({
+  page,
+}) => {
+  const run = {
+    ...completed,
+    id: "failed-repository",
+    family: "agent",
+    profile: "repository-tasks",
+    profile_spec: profiles.find((p: any) => p.id === "repository-tasks"),
+    status: "failed",
+    error: "PermissionError: oracle log unreadable",
+    summary: {
+      daytime: {
+        score: null,
+        unit: "%",
+        partial: true,
+        passed: 1,
+        count: 2,
+        completed_count: 1,
+        tasks: [
+          {
+            id: "fixed-task",
+            status: "passed",
+            trial_path: "harbor/job/trial/result.json",
+          },
+          {
+            id: "pending-task",
+            status: "not_completed",
+            detail: "No completed trial",
+          },
+        ],
+      },
+    },
+  };
+  await page.route("**/api/runs", (route) => route.fulfill({ json: [run] }));
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Repository tasks", exact: true })
+    .click();
+  await expect(page.getByText(/Partial evidence: 1 of 2/)).toBeVisible();
+  await expect(
+    page.getByText("PermissionError: oracle log unreadable"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Trial evidence" }),
+  ).toHaveAttribute("href", /failed-repository\/artifacts\/daytime\/harbor/);
+  await expect(
+    page.getByRole("button", { name: "Set baseline" }),
+  ).toBeDisabled();
+});
+
+test("coding details distinguish exhausted output and repetitive reasoning", async ({
+  page,
+}) => {
+  const run = {
+    ...completed,
+    family: "quality",
+    profile: "coding-checks",
+    profile_spec: profiles.find((p: any) => p.id === "coding-checks"),
+    summary: {
+      daytime: {
+        score: 0,
+        unit: "%",
+        passed: 0,
+        count: 1,
+        repetition_count: 1,
+        tasks: [
+          {
+            id: "task",
+            status: "failed",
+            finish_reason: "length",
+            detail: "Output budget exhausted; no final code returned",
+            diagnostics: { answer_chars: 0, reasoning_chars: 9000 },
+            usage: { completion_tokens: 8192 },
+          },
+        ],
+      },
+    },
+  };
+  await page.route("**/api/runs", (route) => route.fulfill({ json: [run] }));
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Coding checks", exact: true })
+    .click();
+  await expect(
+    page.getByText(/1 answers exhausted the total output budget/),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/1 responses showed repetitive reasoning/),
+  ).toBeVisible();
+  await expect(page.getByText(/0 answer characters/)).toBeVisible();
+});

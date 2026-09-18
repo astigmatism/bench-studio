@@ -5,6 +5,8 @@ Only the model transport is replaced; production router configuration is untouch
 """
 
 import json
+import os
+import asyncio
 from pathlib import Path
 from harbor.agents.terminus_2.terminus_2 import Terminus2
 from harbor.llms.base import BaseLLM, LLMResponse, OutputLengthExceededError
@@ -14,7 +16,7 @@ from .router_stream import completion
 
 
 class RouterLLM(BaseLLM):
-    infrastructure_errors = []
+    infrastructure_errors = {}
 
     async def call(self, *args, **kwargs):
         try:
@@ -22,7 +24,7 @@ class RouterLLM(BaseLLM):
         except OutputLengthExceededError:
             raise
         except Exception as exc:
-            self.infrastructure_errors.append(str(exc))
+            self.infrastructure_errors.setdefault(self.model, []).append(str(exc))
             raise
 
     def __init__(self, model_name, api_base, model_info, parameters):
@@ -61,7 +63,7 @@ class RouterLLM(BaseLLM):
             for m in (message_history or [])
         ]
         messages.append({"role": "user", "content": prompt})
-        permitted = {"temperature", "top_p", "seed", "max_tokens", "reasoning_effort"}
+        permitted = {"temperature", "top_p", "seed", "max_tokens", "reasoning_effort", "reasoning_budget_tokens"}
         if set(kwargs) - permitted:
             raise ValueError(
                 "Unsupported Harbor call settings: "
@@ -73,6 +75,11 @@ class RouterLLM(BaseLLM):
             **self.parameters,
             **kwargs,
         }
+        if os.environ.get("BENCH_STUDIO_MANIFEST"):
+            from common import read_json, wait_for_runtime
+            manifest = read_json(os.environ["BENCH_STUDIO_MANIFEST"])
+            target = next(t for t, value in manifest["resolved"].items() if value["canonical"] == self.model)
+            await asyncio.to_thread(wait_for_runtime, manifest["settings"], target, manifest["resolved"][target])
         print(self.model, "request started; input messages", len(messages), flush=True)
         result = await completion(
             self.endpoint,

@@ -4,6 +4,7 @@
 **/*.pyc
 .pytest_cache
 frontend/node_modules
+verifier/node_modules
 frontend/test-results
 frontend/playwright-report
 data

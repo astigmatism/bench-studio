@@ -8,15 +8,15 @@ from . import config
 _processes = {}
 
 
-def validate_prepared_tasks(tasks):
+def validate_prepared_tasks(tasks, *, prepared_root=None):
     from .runner import docker
 
     for task in tasks:
-        root = config.DATA / "repository-tasks" / task["id"]
+        root = (prepared_root or config.DATA / "repository-tasks") / task["id"]
         definition = tomllib.loads((root / "task.toml").read_text())
         if definition.get("environment", {}).get("docker_image") != task["image_id"]:
             raise RuntimeError("Prepared task image does not match the pinned manifest")
-        scripts = list(root.rglob("*.sh"))
+        scripts = list((root / "tests").rglob("*.sh")) + list((root / "solution").rglob("*.sh"))
         if not scripts or any(not os.access(p, os.X_OK) for p in scripts):
             raise RuntimeError(
                 "Repository verifier scripts are not executable; rerun task preparation"
@@ -44,9 +44,15 @@ def launch_agent(m):
         != m["profile_spec"]["task_manifest_hash"]
     ):
         raise RuntimeError("Repository task manifest changed while queued")
-    validate_prepared_tasks(eligible[:count])
     m["repository_tasks"] = eligible[:count]
     root = config.DATA / "runs" / m["id"]
+    from .repository import snapshot_task
+    m["repository_definition_hashes"] = {}
+    for task in m["repository_tasks"]:
+        m["repository_definition_hashes"][task["id"]] = snapshot_task(
+            config.DATA / "repository-tasks" / task["id"], root / "repository-tasks" / task["id"]
+        )
+    validate_prepared_tasks(eligible[:count], prepared_root=root / "repository-tasks")
     path = root / "manifest.json"
     atomic_json(path, m)
     with (root / "run.log").open("a") as output:
@@ -59,6 +65,7 @@ def launch_agent(m):
                 OPENAI_API_KEY="local-not-required",
                 LITELLM_TELEMETRY="False",
                 DO_NOT_TRACK="1",
+                BENCH_STUDIO_MANIFEST=str(path),
             ),
             start_new_session=True,
         )
@@ -86,7 +93,8 @@ def poll_agent(m):
         )
         record(m)
         return
-    outcome = read_json(config.DATA / "runs" / m["id"] / "agent-outcome.json")
+    outcome_path = config.DATA / "runs" / m["id"] / "agent-outcome.json"
+    outcome = read_json(outcome_path) if outcome_path.exists() else {"status": "failed", "error": "Harbor exited without an outcome; partial trial evidence retained"}
     _processes.pop(m["id"], None)
     if child.returncode or outcome["status"] != "completed":
         raise RuntimeError(outcome.get("error", "Harbor failed"))
