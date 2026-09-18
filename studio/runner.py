@@ -244,7 +244,11 @@ def poll(m):
     path = config.DATA / "runs" / m["id"] / "manifest.json"
     if path.exists():
         worker = read_json(path)
-        for k in ["progress", "targets", "error"]:
+        for k in (
+            ["progress", "targets", "error"]
+            if m.get("stage") == "generation"
+            else ["error"]
+        ):
             if k in worker:
                 m[k] = worker[k]
     all_done = True

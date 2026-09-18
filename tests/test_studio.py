@@ -440,3 +440,47 @@ def test_docker_missing_worker_error_is_case_insensitive(monkeypatch, stderr):
         lambda *a, **k: subprocess.CompletedProcess(a, 1, "[]", stderr),
     )
     assert runner.inspect("worker") is None
+
+
+@pytest.mark.parametrize("fault", [None, "usage", "finish", "done", "json"])
+def test_harbor_stream_adapter_requires_complete_real_measurements(fault):
+    import asyncio, httpx
+    from studio.router_stream import completion
+
+    chunks = [
+        {"choices": [{"delta": {"content": "hello"}, "finish_reason": None}]},
+        {
+            "choices": [
+                {"delta": {}, "finish_reason": None if fault == "finish" else "stop"}
+            ],
+            "usage": (
+                None
+                if fault == "usage"
+                else {"prompt_tokens": 10, "completion_tokens": 2}
+            ),
+        },
+    ]
+    text = "".join("data: " + json.dumps(c) + "\n\n" for c in chunks)
+    if fault != "done":
+        text += "data: [DONE]\n\n"
+    if fault == "json":
+        text = "data: broken\n\n" + text
+
+    def handler(request):
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(
+            200, text=text, headers={"content-type": "text/event-stream"}
+        )
+
+    call = lambda: asyncio.run(
+        completion(
+            "http://router/v1",
+            {"model": "test"},
+            transport=httpx.MockTransport(handler),
+        )
+    )
+    if fault:
+        with pytest.raises((RuntimeError, ValueError)):
+            call()
+    else:
+        assert call()["content"] == "hello"

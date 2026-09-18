@@ -23,6 +23,7 @@ async def main(path):
             "temperature": p["temperature"],
             "max_turns": p["max_turns"],
             "use_responses_api": False,
+            "record_terminal_session": False,
             "llm_kwargs": {
                 "max_tokens": p["max_tokens"],
                 "seed": p["seed"],
@@ -57,7 +58,7 @@ async def main(path):
             },
             "agents": [
                 {
-                    "name": "terminus-2",
+                    "import_path": "studio.harbor_agent:RouterTerminus2",
                     "model_name": "openai/" + resolved["canonical"],
                     "override_timeout_sec": p["task_timeout"],
                     "kwargs": kwargs,
