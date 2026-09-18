@@ -46,7 +46,7 @@ async def run():
         await agent._llm.call("test", previous_response_id=None)
     except RuntimeError:
         pass
-    assert harbor_agent.RouterLLM.infrastructure_errors == ["Missing usage"]
+    assert harbor_agent.RouterLLM.infrastructure_errors == {"local-test": ["Missing usage"]}
     print("Pinned Terminus 2 transport integration PASS; no model calls")
 
 

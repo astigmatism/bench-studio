@@ -6,12 +6,15 @@ from pathlib import Path
 from harbor.job import Job
 from harbor.models.job.config import JobConfig
 from studio import config
+from studio.repository import snapshot_task
 
 
 async def main():
     catalog = json.loads((config.DATA / "repository-manifest.json").read_text())
     task = catalog["tasks"][0]
     name = "harbor-oracle-" + uuid.uuid4().hex[:8]
+    prepared = config.DATA / "validation" / (name + "-inputs") / task["id"]
+    snapshot_task(config.DATA / "repository-tasks" / task["id"], prepared)
     cfg = JobConfig.model_validate(
         {
             "job_name": name,
@@ -27,7 +30,7 @@ async def main():
                 "override_gpus": 0,
             },
             "agents": [{"name": "oracle"}],
-            "tasks": [{"path": str(config.DATA / "repository-tasks" / task["id"])}],
+            "tasks": [{"path": str(prepared)}],
         }
     )
     job = await Job.create(cfg)
