@@ -12,7 +12,7 @@ python scripts/prepare-repositories.py
 python scripts/bootstrap-repositories.py
 ```
 
-`prepare-repositories.py` reconstructs definitions from pinned upstream data and scripts. `bootstrap-repositories.py` uses the published task order and base-image digests, builds dependencies, and runs the gold patch with networking disabled. A published task that fails validation stops preparation; it is never silently substituted. It records image IDs in each task configuration. No gold solution or gold test is included in the pristine task image. The verifier installs gold tests after the agent finishes.
+`prepare-repositories.py` reconstructs definitions from pinned upstream data and scripts. `bootstrap-repositories.py` uses the published task order and base-image digests, builds dependencies, and runs the gold patch with networking disabled. A published task that fails validation stops preparation; it is never silently substituted. It records image IDs in each task configuration. The initial task working tree is reset to the pinned base commit. Gold test changes are checked out by the verifier after the agent finishes. The upstream repository history remains available, so these local subsets do not claim protection against an agent searching Git history for later changes.
 
 Tutanota's native Node dependencies are prebuilt before timing. Its verifier starts wall time at **2025-01-15 12:00:00 UTC**, using libfaketime with real monotonic time. This addresses an upstream test that otherwise fails late in the day, without changing the test assertions or required-test set. This local adapter condition is recorded in the committed selection manifest.
 
