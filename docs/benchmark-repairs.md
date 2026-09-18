@@ -13,3 +13,10 @@ Nested Harbor exceptions expose their underlying cause. Partial trial results re
 A transient runtime readiness probe gets a bounded 90-second grace period. Model/container/configuration changes still invalidate immediately. New quality/agent requests wait for readiness; inference requests are never automatically replayed. Persistent readiness failure stops the benchmark with a clear error.
 
 Validation uses isolated verifier containers without network access. Saved model outputs may be regraded only in a new validation directory, never in an original run directory. Model smoke tests use the scheduler and its idle gate. Deployment uses the existing Service Portal update contract and state backup.
+
+## Repair validation
+
+- 75 backend tests and six browser tests pass, including healthy/unhealthy identity drift, partial Harbor results, nested errors, dataset exclusion, Node imports/exports, and output-budget diagnostics.
+- Network-isolated replay of saved responses: all five prior module/import failures pass. A known incorrect solution still fails, and a reasoning-only truncated response remains an output-exhaustion failure.
+- All 20 pinned repository definitions pass readability/image checks and Harbor checksumming using clean per-run copies. The formerly crashing fifth task's reference solution completes offline with reward 1 and no exception.
+- Validation outputs are stored separately under the deployment data directory; original run files are not regraded or overwritten.

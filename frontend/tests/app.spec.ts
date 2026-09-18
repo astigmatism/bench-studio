@@ -257,3 +257,25 @@ test("coding details distinguish exhausted output and repetitive reasoning", asy
   ).toBeVisible();
   await expect(page.getByText(/0 answer characters/)).toBeVisible();
 });
+
+test("coding launch explains shared output allowance", async ({ page }) => {
+  await page
+    .getByRole("button", { name: "New benchmark", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: /Coding checks Solutions graded/ })
+    .click();
+  await page.getByText("Advanced parameters · profile defaults").click();
+  await expect(
+    page.getByLabel("Total output tokens (thinking + answer)"),
+  ).toHaveValue("8192");
+  await expect(
+    page.getByText(/The total output limit includes thinking/),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});

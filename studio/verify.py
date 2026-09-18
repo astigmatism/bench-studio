@@ -23,7 +23,10 @@ def extract(response):
 def main(root):
     root = Path(root)
     tasks = read_json(root / "tasks.json")
-    responses = {r["id"]: r for r in read_json(root / "responses.json")}
+    raw_responses = read_json(root / "responses.json")
+    responses = {r["id"]: r for r in raw_responses}
+    if len(responses) != len(raw_responses) or set(responses) != {t["id"] for t in tasks}:
+        raise RuntimeError("Verifier task/response identities do not match")
     rows = []
     pys = [t for t in tasks if t["language"] == "python"]
     pygrades = {}
@@ -87,7 +90,11 @@ def main(root):
                 "EvalPlus verifier infrastructure failed; see python-verifier.log"
             )
         result = read_json(root / "samples_eval_results.json")
+        if set(result.get("eval", {})) != ids:
+            raise RuntimeError("EvalPlus did not return every requested task grade")
         for tid, values in result["eval"].items():
+            if len(values) != 1 or not all(k in values[0] for k in ("base_status", "plus_status")):
+                raise RuntimeError("EvalPlus returned an incomplete task grade: " + tid)
             value = values[0]
             pygrades[tid] = (
                 value.get("base_status") == "pass"

@@ -158,3 +158,39 @@ def test_historical_repository_exception_is_explained_without_mutation(tmp_path)
     r = collect_trials(tmp_path / 'daytime',[{'id':'a','language':'python'}], job_error='unhandled errors in a TaskGroup (1 sub-exception)')
     assert r['infrastructure_error'] == 'PermissionError: unreadable oracle log'
     assert log.read_bytes() == before
+
+
+def test_generation_sends_optional_thinking_limit(monkeypatch):
+    import httpx
+    from studio import quality_worker
+    captured = []
+    original = httpx.Client
+    def handler(request):
+        captured.append(json.loads(request.content))
+        packets = [{'choices':[{'delta':{'content':'def f(): pass'},'finish_reason':'stop'}], 'usage':{'prompt_tokens':10,'completion_tokens':5}}]
+        text = ''.join('data: '+json.dumps(p)+'\n\n' for p in packets)+'data: [DONE]\n\n'
+        return httpx.Response(200,text=text)
+    monkeypatch.setattr(quality_worker.httpx, 'Client', lambda **kw: original(transport=httpx.MockTransport(handler),**kw))
+    params={'temperature':0,'top_p':1,'seed':42,'max_tokens':8192,'reasoning_effort':'xhigh','reasoning_budget_tokens':6144}
+    task={'id':'test','language':'python','prompt':'def f():'}
+    quality_worker.generate('http://router/v1','test',task,params,lambda _:None)
+    assert captured[0]['reasoning_budget_tokens'] == 6144
+    params['reasoning_budget_tokens'] = None
+    quality_worker.generate('http://router/v1','test',task,params,lambda _:None)
+    assert 'reasoning_budget_tokens' not in captured[1]
+
+
+def test_readiness_wait_rechecks_identity_before_new_request(monkeypatch):
+    import common
+    snap = healthy_snapshot()
+    expected = copy.deepcopy(resolve(snap,'daytime'))
+    bad = copy.deepcopy(snap)
+    bad['runtime']['services'][0]['healthy'] = False
+    snapshots = iter([bad,snap])
+    monkeypatch.setattr(common,'snapshot',lambda _:next(snapshots))
+    monkeypatch.setattr('time.sleep',lambda _:None)
+    assert common.wait_for_runtime({},'daytime',expected)['canonical'] == 'qwen'
+    bad['runtime']['services'][0]['id'] = 'new-container'
+    monkeypatch.setattr(common,'snapshot',lambda _:bad)
+    with pytest.raises(RuntimeError,match='changed during'):
+        common.wait_for_runtime({},'daytime',expected)

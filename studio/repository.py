@@ -63,7 +63,7 @@ def collect_trials(out, expected, *, job_error=None):
             reward = ((r.get("verifier_result") or {}).get("rewards") or {}).get("reward")
             error_type = error.get("exception_type")
             infra = bool(error and error_type not in BUDGET_ERRORS)
-            if reward not in (0, 1) and error_type not in BUDGET_ERRORS:
+            if (type(reward) not in (int, float) or reward not in (0, 1)) and error_type not in BUDGET_ERRORS:
                 infra = True
             message = error.get("exception_message") or error_type
             if infra:
