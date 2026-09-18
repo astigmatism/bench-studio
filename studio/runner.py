@@ -75,6 +75,8 @@ def host_evidence(snap):
             ).get("default_generation_settings", {})
         except Exception as e:
             evidence["backend_defaults"][alias] = {"unavailable": str(e)}
+    controller = inspect("bench-studio-runner")
+    evidence["runner_image"] = controller.get("Image") if controller else None
     for role, image in [
         ("worker", config.WORKER_IMAGE),
         ("verifier", config.VERIFIER_IMAGE),
@@ -91,7 +93,11 @@ def create_worker(m, role, command, *, target=None, image=None, network="bridge"
         raise ValueError(
             "Model alias must use letters, numbers, dot, dash, or underscore"
         )
-    image = image or config.WORKER_IMAGE
+    image = image or m.get("host", {}).get(
+        "verifier_image" if role == "verify" else "worker_image"
+    )
+    if not image:
+        raise RuntimeError("A pinned execution image is required before starting")
     source = config.DATA if not target else config.DATA / "runs" / m["id"] / target
     destination = "/data" if not target else "/task"
     args = [
@@ -189,6 +195,8 @@ def start(m, snap):
         workers={},
         progress="Preparing benchmark",
     )
+    if m["family"] == "quality" and not m["host"].get("verifier_image"):
+        raise RuntimeError("The pinned coding verifier image is unavailable")
     m["generation"] = generation.snapshot(m)
     atomic_json(path / "manifest.json", m)
     record(m)
@@ -291,7 +299,7 @@ def poll(m):
                 "verify",
                 ["python", "/app/studio/verify.py", "/task"],
                 target=t,
-                image=config.VERIFIER_IMAGE,
+                image=m["host"]["verifier_image"],
                 network="none",
             )
         return

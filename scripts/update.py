@@ -88,6 +88,7 @@ def deploy():
                 }
             )
         )
+        safe_to_resume = True
         try:
             before = run("git", "rev-parse", "HEAD").stdout.strip()
             print("Fetching public upstream", flush=True)
@@ -108,21 +109,11 @@ def deploy():
                 ).returncode
                 == 0
             )
-            local_ahead = (
-                run(
-                    "git",
-                    "merge-base",
-                    "--is-ancestor",
-                    "origin/main",
-                    "HEAD",
-                    check=False,
-                ).returncode
-                == 0
-            )
-            if not ahead and not local_ahead:
-                raise RuntimeError("Refusing divergent or rewritten upstream history")
-            if ahead:
-                run("git", "merge", "--ff-only", "origin/main")
+            if not ahead:
+                raise RuntimeError(
+                    "Refusing divergent, rewritten, or unpublished local history"
+                )
+            run("git", "merge", "--ff-only", "origin/main")
             revision = run("git", "rev-parse", "HEAD").stdout.strip()
             env = dict(os.environ, SOURCE_REVISION=revision)
             backup = (
@@ -166,15 +157,31 @@ def deploy():
                 "Building replacement images while the current application stays available",
                 flush=True,
             )
-            run(
-                "docker",
-                "compose",
-                "--profile",
-                "images",
-                "build",
-                capture=False,
-                env=env,
-            )
+            try:
+                run(
+                    "docker",
+                    "compose",
+                    "--profile",
+                    "images",
+                    "build",
+                    capture=False,
+                    env=env,
+                )
+            except Exception:
+                # Compose may retag some images before another target's build fails.
+                # Keep the still-running application on its previous execution images.
+                for image, image_id in evidence["images"].items():
+                    restored = run(
+                        "docker", "image", "tag", image_id, image, check=False
+                    )
+                    if restored.returncode:
+                        safe_to_resume = False
+                if not safe_to_resume:
+                    print(
+                        "Image restoration failed; maintenance remains active. Follow the recovery guide.",
+                        flush=True,
+                    )
+                raise
             print(
                 "Recreating application and controller; waiting for health", flush=True
             )
@@ -193,7 +200,8 @@ def deploy():
             )
             print("Success: healthy Bench Studio " + revision, flush=True)
         finally:
-            marker.unlink(missing_ok=True)
+            if safe_to_resume:
+                marker.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

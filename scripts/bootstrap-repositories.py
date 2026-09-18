@@ -16,7 +16,7 @@ published_path = ROOT / "datasets" / "repository-manifest.json"
 published = json.loads(published_path.read_text()) if published_path.exists() else None
 records = published["tasks"] if published else manifest["candidates"]
 selected = []
-rejected = []
+rejected = list(published.get("excluded", [])) if published else []
 
 
 def run(args, log, timeout=1800):
@@ -163,7 +163,7 @@ for record in records:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        audit = manifest | {"tasks": selected, "excluded": rejected}
+        audit = (published or manifest) | {"tasks": selected, "excluded": rejected}
         (DATA / "repository-manifest.json").write_text(json.dumps(audit, indent=2))
     if len(selected) >= 20:
         break

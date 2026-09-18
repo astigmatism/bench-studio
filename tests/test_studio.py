@@ -319,8 +319,9 @@ def test_arbitrary_provider_names_are_safe_and_resolve():
     assert resolve(snap, target)["canonical"] == name
 
 
+@pytest.mark.parametrize("restore_failure", [False, True])
 def test_updater_failure_preserves_database_and_clears_maintenance(
-    client, monkeypatch, tmp_path
+    client, monkeypatch, tmp_path, restore_failure
 ):
     import subprocess, sqlite3
 
@@ -345,17 +346,24 @@ def test_updater_failure_preserves_database_and_clears_maintenance(
             and args[-1] == "build"
         ):
             raise RuntimeError("build failed")
-        return subprocess.CompletedProcess(args, 0, stdout="abc123", stderr="")
+        return subprocess.CompletedProcess(
+            args,
+            1 if restore_failure and args[:3] == ("docker", "image", "tag") else 0,
+            stdout="abc123",
+            stderr="",
+        )
 
     monkeypatch.setattr(mod, "run", run)
     with pytest.raises(RuntimeError, match="build failed"):
         mod.deploy()
-    assert len(db.runs()) == 1 and not (config.DATA / ".maintenance").exists()
+    assert len(db.runs()) == 1
+    assert (config.DATA / ".maintenance").exists() == restore_failure
+    assert len([args for args in calls if args[:3] == ("docker", "image", "tag")]) == 4
     assert list((config.DATA / "backups").glob("*/studio.sqlite3"))
     assert not any("up" in args or "down" in args or "prune" in args for args in calls)
 
 
-@pytest.mark.parametrize("failure", ["divergent", "health"])
+@pytest.mark.parametrize("failure", ["divergent", "unpublished", "health"])
 def test_updater_rejects_divergence_and_failed_health(
     client, monkeypatch, tmp_path, failure
 ):
@@ -379,14 +387,20 @@ def test_updater_rejects_divergence_and_failed_health(
         calls.append(args)
         if failure == "health" and args[:3] == ("docker", "compose", "up"):
             raise RuntimeError("health failed")
-        code = 1 if failure == "divergent" and "merge-base" in args else 0
+        code = (
+            1
+            if failure in ["divergent", "unpublished"]
+            and "merge-base" in args
+            and (failure == "divergent" or args[-2:] == ("HEAD", "origin/main"))
+            else 0
+        )
         return subprocess.CompletedProcess(args, code, stdout="abc123", stderr="")
 
     monkeypatch.setattr(mod, "run", run)
     with pytest.raises(RuntimeError, match=failure):
         mod.deploy()
     assert len(db.runs()) == 1 and not (config.DATA / ".maintenance").exists()
-    if failure == "divergent":
+    if failure in ["divergent", "unpublished"]:
         assert not any("build" in args for args in calls)
     assert not any("down" in args or "prune" in args for args in calls)
 
@@ -537,3 +551,65 @@ def test_repository_preflight_rejects_unusable_verifier_before_inference(
     (root / "task.toml").write_text('[environment]\ndocker_image = "different"\n')
     with pytest.raises(RuntimeError, match="pinned manifest"):
         validate_prepared_tasks([task])
+
+
+def test_prefill_reports_preserve_per_request_measurements_and_skips(client):
+    c, _, _ = client
+    m = launch(c, profile="prefill-smoke").json()
+    m["status"] = "completed"
+    root = config.DATA / "runs" / m["id"] / "daytime"
+    root.mkdir(parents=True)
+    atomic_json(
+        root / "prefill.json",
+        {
+            "prefill": [
+                {
+                    "target_depth": 2000,
+                    "prompt_tokens": [1970, 1972],
+                    "ttft_ms": [1970, 1972],
+                    "pp_tps": [1000, 1000],
+                },
+                {
+                    "target_depth": 64000,
+                    "skipped": True,
+                    "reason": "Exceeds available context",
+                },
+            ]
+        },
+    )
+    s = results.summarize(m)["daytime"]
+    assert s["score"] == 1000 and s["count"] == 2
+    assert s["tasks"][0]["prompt_tokens"] == 1970
+    assert s["tasks"][1]["prefill_tps"] == 1000
+    assert s["tasks"][2]["status"] == "skipped"
+
+    atomic_json(
+        root / "prefill.json",
+        {
+            "prefill": [
+                {
+                    "target_depth": 2000,
+                    "prompt_tokens": [],
+                    "ttft_ms": [1000],
+                    "pp_tps": [1000],
+                },
+            ]
+        },
+    )
+    broken = results.summarize(m)["daytime"]
+    assert broken["score"] is None and broken.get("summary_error")
+
+
+def test_worker_uses_captured_image_identity_instead_of_mutable_tag(
+    client, monkeypatch
+):
+    c, _, _ = client
+    m = launch(c).json()
+    m["host"] = {"worker_image": "sha256:captured-image"}
+    calls = []
+    monkeypatch.setattr(runner, "inspect", lambda name: None)
+    monkeypatch.setattr(runner, "docker", lambda *a: calls.append(a))
+    runner.create_worker(m, "generate", ["python", "/app/worker.py"])
+    assert "sha256:captured-image" in calls[0]
+    assert config.WORKER_IMAGE not in calls[0]
+    assert calls[1][0] == "start"

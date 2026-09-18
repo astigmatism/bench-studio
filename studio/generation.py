@@ -33,7 +33,20 @@ def snapshot(run):
     for target in run["requested_targets"]:
         observed = run["host"]["backend_defaults"].get(target, {})
         defaults = observed.get("params", {})
-        effective = defaults | sent
+        sampling_keys = {
+            "seed",
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "typical_p",
+            "repeat_penalty",
+            "repeat_last_n",
+            "presence_penalty",
+            "frequency_penalty",
+            "max_tokens",
+        }
+        effective = {k: v for k, v in defaults.items() if k in sampling_keys} | sent
         effective.pop("n_predict", None)
         if budgets:
             effective["max_tokens"] = "See output_budgets_by_workload"

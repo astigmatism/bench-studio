@@ -76,8 +76,29 @@ def summarize(m):
                     count=sum(r.get("pp_n", 0) for r in rows),
                     score_label="Median of depth medians",
                 )
-        except (ValueError, KeyError, TypeError, OSError) as e:
+                for depth in data.get("prefill", []):
+                    if depth.get("skipped"):
+                        item["tasks"].append(
+                            {
+                                "id": f"depth {depth['target_depth']}",
+                                "status": "skipped",
+                                "detail": depth.get("reason", "Depth unavailable"),
+                            }
+                        )
+                        continue
+                    for i, rate in enumerate(depth.get("pp_tps", [])):
+                        item["tasks"].append(
+                            {
+                                "id": f"depth {depth['target_depth']} / {i+1}",
+                                "status": "passed",
+                                "prefill_tps": rate,
+                                "prompt_tokens": depth.get("prompt_tokens", [])[i],
+                                "ttft_ms": depth.get("ttft_ms", [])[i],
+                            }
+                        )
+        except (ValueError, KeyError, IndexError, TypeError, OSError) as e:
             item["summary_error"] = str(e)
+            item["score"] = None
         if m["status"] != "completed":
             item["score"] = None
         result[target] = item
@@ -179,7 +200,7 @@ def compare(a, b, ta, tb):
         ),
     }
     fields["application revision"] = (a.get("revision"), b.get("revision"))
-    for role in ["worker_image", "verifier_image"]:
+    for role in ["worker_image", "verifier_image", "runner_image"]:
         fields[role] = (a.get("host", {}).get(role), b.get("host", {}).get(role))
     for k in set(a.get("profile_spec", {}).get("parameters", {})) | set(
         b.get("profile_spec", {}).get("parameters", {})

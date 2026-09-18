@@ -2,9 +2,9 @@
 
 Exactly one long-lived Compose service (`reports`) carries Service Portal's four update labels. The updater image is built in advance and contains Git, Docker CLI, Compose, Python/SQLite. Portal mounts the checkout at its original absolute path and supplies Docker's supplementary group. UID/GID defaults to 1000:1000. No SSH keys or GitHub token are needed to fetch the public repository.
 
-The updater refuses dirty source, detached/wrong branches, unexpected origin/upstream, divergent history, or an active benchmark. An atomic `.execution.lock` shared with the scheduler prevents a launch racing maintenance. `.maintenance` pauses new starts. A queued job remains in SQLite. It is blocked for review if its saved application revision no longer matches after an update.
+The updater refuses dirty source, detached/wrong branches, unexpected origin/upstream, divergent/unpublished local history, or an active benchmark. An atomic `.execution.lock` shared with the scheduler prevents a launch racing maintenance. `.maintenance` pauses new starts. A queued job remains in SQLite. It is blocked for review if its saved application revision no longer matches after an update.
 
-Update sequence: validate checkout/tools; lock and check active jobs; fetch and fast-forward; back up SQLite with the live backup API and save previous image identities; validate Compose; build all five images; reconcile `reports` and `runner` with a 150-second health wait. Errors remain nonzero for Portal. The script does not use global prune, remove volumes, or bring down the application stack.
+Update sequence: validate checkout/tools; lock and check active jobs; fetch and fast-forward; back up SQLite with the live backup API and save previous image identities; validate Compose; build all five images; reconcile `reports` and `runner` with a 150-second health wait. A failed build restores the previous execution-image tags before releasing maintenance. If restoration fails, maintenance stays active for recovery. Errors remain nonzero for Portal. The script does not use global prune, remove volumes, or bring down the application stack.
 
 Backups are under `data/backups/TIMESTAMP/`, containing `studio.sqlite3` and `deployment.json`. Raw `data/runs/`, configuration, and downloaded task environments remain in place. Keep an external backup of `data/` for disk failure recovery.
 

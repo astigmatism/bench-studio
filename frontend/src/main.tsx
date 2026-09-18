@@ -1064,6 +1064,8 @@ function RunDetail({
                     />
                     <XAxis
                       dataKey="actual"
+                      type="number"
+                      domain={["dataMin", "dataMax"]}
                       name="Actual input tokens"
                       tick={{ fontSize: 11 }}
                     />
@@ -1224,12 +1226,14 @@ function RunDetail({
                     </span>
                   </td>
                   <td className="bs-small">
-                    {task.decode_tps != null
-                      ? `${fmt(task.decode_tps)} tok/s · ${fmt(task.ttft_ms)} ms TTFT`
-                      : task.error ||
-                        task.detail ||
-                        task.finish_reason ||
-                        "Tests completed"}
+                    {task.prefill_tps != null
+                      ? `${fmt(task.prefill_tps)} prompt tok/s · ${fmt(task.prompt_tokens, 0)} input tokens · ${fmt(task.ttft_ms)} ms TTFT`
+                      : task.decode_tps != null
+                        ? `${fmt(task.decode_tps)} tok/s · ${fmt(task.ttft_ms)} ms TTFT`
+                        : task.error ||
+                          task.detail ||
+                          task.finish_reason ||
+                          "Tests completed"}
                   </td>
                 </tr>
               ))}
