@@ -14,6 +14,17 @@ from .router_stream import completion
 
 
 class RouterLLM(BaseLLM):
+    infrastructure_errors = []
+
+    async def call(self, *args, **kwargs):
+        try:
+            return await self._call(*args, **kwargs)
+        except OutputLengthExceededError:
+            raise
+        except Exception as exc:
+            self.infrastructure_errors.append(str(exc))
+            raise
+
     def __init__(self, model_name, api_base, model_info, parameters):
         self.model = model_name.removeprefix("openai/")
         self.endpoint = api_base
@@ -26,7 +37,7 @@ class RouterLLM(BaseLLM):
     def get_model_output_limit(self):
         return self.info["max_output_tokens"]
 
-    async def call(
+    async def _call(
         self,
         prompt,
         message_history=None,
@@ -34,6 +45,8 @@ class RouterLLM(BaseLLM):
         logging_path=None,
         **kwargs
     ):
+        if kwargs.pop("previous_response_id", None) is not None:
+            raise ValueError("Stateful Responses API is not used by this adapter")
         if response_format:
             schema = (
                 response_format

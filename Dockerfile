@@ -32,7 +32,7 @@ FROM base AS app
 COPY --from=ui /ui/dist /app/frontend/dist
 COPY --from=source /app /app
 ARG SOURCE_REVISION=development
-ENV SOURCE_REVISION=$SOURCE_REVISION
+ENV SOURCE_REVISION=$SOURCE_REVISION LITELLM_LOCAL_MODEL_COST_MAP=True
 LABEL org.opencontainers.image.source="https://github.com/astigmatism/bench-studio" org.opencontainers.image.revision=$SOURCE_REVISION
 USER 1000:1000
 CMD ["uvicorn","studio.api:app","--host","0.0.0.0","--port","8080"]
@@ -40,7 +40,7 @@ CMD ["uvicorn","studio.api:app","--host","0.0.0.0","--port","8080"]
 FROM base AS worker
 COPY --from=source /app /app
 ARG SOURCE_REVISION=development
-ENV SOURCE_REVISION=$SOURCE_REVISION
+ENV SOURCE_REVISION=$SOURCE_REVISION LITELLM_LOCAL_MODEL_COST_MAP=True
 LABEL org.opencontainers.image.source="https://github.com/astigmatism/bench-studio" org.opencontainers.image.revision=$SOURCE_REVISION
 USER 1000:1000
 CMD ["python","/app/worker.py"]
@@ -54,7 +54,7 @@ COPY requirements-runner.txt ./
 RUN pip install --no-cache-dir -r requirements-runner.txt
 COPY --from=source /app /app
 ARG SOURCE_REVISION=development
-ENV SOURCE_REVISION=$SOURCE_REVISION
+ENV SOURCE_REVISION=$SOURCE_REVISION LITELLM_LOCAL_MODEL_COST_MAP=True
 LABEL org.opencontainers.image.source="https://github.com/astigmatism/bench-studio" org.opencontainers.image.revision=$SOURCE_REVISION
 USER 1000:1000
 CMD ["python","-m","studio.runner"]
@@ -77,7 +77,7 @@ RUN python /tmp/fetch-multiple-verifier.py
 ENV PYTHONPATH=/app:/app/vendor:/opt/multiple
 COPY --from=source /app /app
 ARG SOURCE_REVISION=development
-ENV SOURCE_REVISION=$SOURCE_REVISION
+ENV SOURCE_REVISION=$SOURCE_REVISION LITELLM_LOCAL_MODEL_COST_MAP=True
 LABEL org.opencontainers.image.source="https://github.com/astigmatism/bench-studio" org.opencontainers.image.revision=$SOURCE_REVISION
 USER 1000:1000
 CMD ["python","/app/studio/verify.py","/task"]

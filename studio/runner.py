@@ -18,7 +18,7 @@ from common import (
     snapshot,
     get_json,
 )
-from . import config, db, results
+from . import config, db, results, generation
 
 MANAGED = "io.bench-studio.run"
 STOP = False
@@ -187,7 +187,9 @@ def start(m, snap):
         host=host_evidence(snap),
         stage="generation",
         workers={},
+        progress="Preparing benchmark",
     )
+    m["generation"] = generation.snapshot(m)
     atomic_json(path / "manifest.json", m)
     record(m)
     log(m, "Starting " + m["profile"] + " / " + m["mode"])

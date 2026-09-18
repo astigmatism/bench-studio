@@ -73,6 +73,13 @@ async def main(path):
         print(now(), t, "Starting", len(cfg["tasks"]), "repository tasks", flush=True)
         job = await Job.create(JobConfig.model_validate(cfg))
         await job.run()
+        from .harbor_agent import RouterLLM
+
+        if RouterLLM.infrastructure_errors:
+            raise RuntimeError(
+                "Model transport failed: "
+                + "; ".join(RouterLLM.infrastructure_errors)[:1500]
+            )
         trials = []
         infrastructure = []
         for path in (out / "harbor" / cfg["job_name"]).glob("*/result.json"):

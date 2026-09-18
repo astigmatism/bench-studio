@@ -1161,7 +1161,12 @@ function RunDetail({
       {tab === "configuration" && (
         <pre className="bs-log">
           {JSON.stringify(
-            { profile: r.profile_spec, resolved: r.resolved, host: r.host },
+            {
+              profile: r.profile_spec,
+              generation: r.generation,
+              resolved: r.resolved,
+              host: r.host,
+            },
             null,
             2,
           )}

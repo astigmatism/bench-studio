@@ -484,3 +484,31 @@ def test_harbor_stream_adapter_requires_complete_real_measurements(fault):
             call()
     else:
         assert call()["content"] == "hello"
+
+
+def test_generation_records_defaults_overrides_and_native_workload_budgets(client):
+    from studio.generation import snapshot
+
+    profile = profiles.configure("smoke")
+    run = {
+        "profile_spec": profile,
+        "requested_targets": ["daytime"],
+        "resolved": {"daytime": {"metadata": {"reasoning": {"default": "default"}}}},
+        "host": {
+            "backend_defaults": {"daytime": {"params": {"temperature": 1, "top_k": 20}}}
+        },
+    }
+    evidence = snapshot(run)["daytime"]
+    assert evidence["effective_sampling"]["temperature"] == 0.7
+    assert evidence["effective_sampling"]["top_k"] == 20
+    assert "top_k" not in evidence["request_overrides"]
+    assert "max_tokens" not in evidence["request_overrides"]
+    assert evidence["output_budgets_by_workload"]
+    assert evidence["reasoning"] == "default"
+    run["profile_spec"] = profiles.configure(
+        "coding-checks", "quick", {"reasoning_effort": "off", "max_tokens": 2048}
+    )
+    evidence = snapshot(run)["daytime"]
+    assert evidence["request_overrides"]["max_tokens"] == 2048
+    assert evidence["reasoning"] == "none"
+    assert evidence["output_budgets_by_workload"] == {}

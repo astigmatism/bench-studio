@@ -12,6 +12,9 @@ VALIDATION = DATA / "repository-validation"
 VALIDATION.mkdir(exist_ok=True)
 SOURCE = ROOT / "datasets" / "cache" / "repository-candidates"
 manifest = json.loads((ROOT / "datasets" / "repository-candidates.json").read_text())
+published_path = ROOT / "datasets" / "repository-manifest.json"
+published = json.loads(published_path.read_text()) if published_path.exists() else None
+records = published["tasks"] if published else manifest["candidates"]
 selected = []
 rejected = []
 
@@ -25,7 +28,9 @@ def run(args, log, timeout=1800):
         ).returncode
 
 
-for record in manifest["candidates"]:
+for record in records:
+    if len(selected) >= 20:
+        break
     # Interleaved deterministic candidates; oracle failures are replaced by the next eligible task.
     task = CACHE / record["id"]
     log = CACHE / (record["id"] + ".setup.log")
@@ -41,6 +46,8 @@ for record in manifest["candidates"]:
         shutil.copytree(
             SOURCE / record["id"] / "tests", task / "tests", dirs_exist_ok=True
         )
+    for script in task.rglob("*.sh"):
+        script.chmod(0o755)
     if cached.exists():
         evidence = json.loads(cached.read_text())
         if evidence.get("passed"):
@@ -54,12 +61,11 @@ for record in manifest["candidates"]:
     try:
         if shutil.disk_usage(DATA).free < 80 * 1024**3:
             raise RuntimeError("Less than 80 GiB free; refusing more task downloads")
-        if run(["docker", "pull", record["base_image"]], log, timeout=900):
+        base = record.get("base_digest", record["base_image"])
+        if run(["docker", "pull", base], log, timeout=900):
             raise RuntimeError("Base image pull failed")
         obj = json.loads(
-            subprocess.check_output(
-                ["docker", "image", "inspect", record["base_image"]], text=True
-            )
+            subprocess.check_output(["docker", "image", "inspect", base], text=True)
         )[0]
         pinned = obj["RepoDigests"][0]
         df = task / "environment" / "Dockerfile"
@@ -139,6 +145,10 @@ for record in manifest["candidates"]:
     except Exception as e:
         print("EXCLUDED", record["id"], str(e), flush=True)
         rejected.append(record | {"reason": str(e)})
+        if published:
+            raise RuntimeError(
+                "Pinned task failed validation; refusing substitution"
+            ) from e
     finally:
         subprocess.run(
             ["docker", "rm", "-f", name],
@@ -149,6 +159,11 @@ for record in manifest["candidates"]:
         (DATA / "repository-manifest.json").write_text(json.dumps(audit, indent=2))
     if len(selected) >= 20:
         break
+(DATA / "repository-manifest.json").write_text(
+    json.dumps(
+        (published or manifest) | {"tasks": selected, "excluded": rejected}, indent=2
+    )
+)
 if len(selected) < 20:
     raise SystemExit(
         f"Only {len(selected)} oracle-verified tasks available; review exclusions before publishing profiles"
