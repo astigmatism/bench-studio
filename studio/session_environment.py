@@ -1,6 +1,7 @@
 """Harbor execution plus fresh, offline verification of bounded candidate sources."""
 
 import asyncio
+import base64
 import json
 import shlex
 import shutil
@@ -12,6 +13,7 @@ import os
 from pathlib import Path
 from . import config
 from common import read_json, atomic_json
+from .session_command import COMMAND_RUNNER
 
 
 def image_dimensions(path):
@@ -211,17 +213,34 @@ class SessionEnvironment:
             command = action.get("command")
             if not isinstance(command, str) or len(command) > 16000:
                 return "Invalid command."
-            try:
-                result = await self.env.exec(command, cwd="/workspace", timeout_sec=120)
-                return json.dumps(
-                    {
-                        "exit_code": result.return_code,
-                        "stdout": (result.stdout or "")[-12000:],
-                        "stderr": (result.stderr or "")[-8000:],
-                    }
-                )
-            except TimeoutError:
-                return "Command exceeded its 120 second limit."
+            # Keep command text out of supervisor/Harbor argv so a model's
+            # process-name cleanup cannot accidentally match its supervisors.
+            result = await self.env.exec(
+                "python -c "
+                + shlex.quote(COMMAND_RUNNER)
+                + " "
+                + shlex.quote(base64.b64encode(command.encode()).decode())
+                + " 120",
+                cwd="/workspace",
+                timeout_sec=130,
+            )
+            if result.return_code:
+                if result.return_code < 0 or result.return_code in {129, 130, 137, 143}:
+                    return json.dumps(
+                        {
+                            "exit_code": result.return_code,
+                            "stdout": (result.stdout or "")[-12000:],
+                            "stderr": (result.stderr or "")[-8000:],
+                            "detail": "Command supervisor was terminated by a signal. Stop background servers by their saved PID; avoid killing unrelated processes. Continue with another command.",
+                        }
+                    )
+                raise RuntimeError("Command runner failed: " + (result.stderr or ""))
+            # A command deadline is a recoverable tool result. The outer Harbor
+            # deadline remains an infrastructure failure, not a model timeout.
+            value = json.loads(result.stdout or "")
+            if not isinstance(value, dict) or "exit_code" not in value:
+                raise RuntimeError("Command runner returned an invalid outcome")
+            return json.dumps(value)
         # This code runs with fixed operations and JSON data, never interpolated source.
         script = """import json,sys,os
 from pathlib import Path

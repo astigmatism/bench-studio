@@ -10,9 +10,18 @@ if(prototype) await page.setContent(readFileSync(prototype,'utf8'),{waitUntil:'l
 else await page.goto('http://127.0.0.1:8111');
 await page.getByRole('heading',{level:1}).waitFor();
 const assert=(value,msg)=>{if(!value)throw new Error(msg)};
-const text=()=>page.locator('main').innerText();
+const text=()=>page.locator('body').innerText();
 if(task==='issues-small'){
- await page.getByLabel('Status filter').selectOption('Open');
+ // Test the behavior without prescribing a dropdown for the visual design.
+ const label=/^Status(?: filter)?$/i;
+ const select=page.getByRole('combobox',{name:label});
+ if(await select.count()===1) await select.selectOption({label:'Open'});
+ else {
+  const group=page.getByRole('group',{name:label}).or(page.getByRole('radiogroup',{name:label})).or(page.getByRole('tablist',{name:label}));
+  const radio=group.getByRole('radio',{name:'Open',exact:true});
+  if(await radio.count()===1) await radio.check();
+  else await group.getByRole('button',{name:'Open',exact:true}).or(group.getByRole('tab',{name:'Open',exact:true})).click();
+ }
  await page.getByLabel('Search',{exact:true}).fill('LOGIN');
  await page.getByText('Fix login',{exact:true}).waitFor();
  assert(/\b1\b/.test(await text()),'visible count for one issue');

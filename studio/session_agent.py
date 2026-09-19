@@ -1,6 +1,7 @@
 """Harbor agent interface for the Studio session protocol."""
 
 from harbor.agents.base import BaseAgent
+from .session_catalog import EXECUTION_VERSION
 
 
 class StudioSessionAgent(BaseAgent):
@@ -13,7 +14,7 @@ class StudioSessionAgent(BaseAgent):
         return "studio-session"
 
     def version(self):
-        return "1"
+        return str(EXECUTION_VERSION)
 
     async def setup(self, environment):
         # The controller prepared the pinned checkout before starting measurement.

@@ -77,6 +77,40 @@ def test_requested_qualification_is_durable_sequential_and_not_replayed(setup_st
     state = json.loads((config.DATA / "session-setup.json").read_text())
     assert all(s["phase"] == "failed" for s in state["suites"].values())
     assert state["phase"] == "needs_attention"
+    # Completing the control request must not hide failures behind "setup idle".
+    with TestClient(app) as client:
+        health = client.get("/api/health").json()["session_setup"]
+    assert health["phase"] == "needs_attention"
+    assert health["can_start"] and not health["can_stop"]
+    assert "Setup has stopped" in health["detail"]
+
+
+def test_failed_smoke_exposes_budget_and_verification_evidence(setup_state):
+    SessionSetup().tick()
+    run = next(r for r in db.runs() if r["profile"] == "visual-design")
+    run["status"] = "completed"
+    db.update_run(run)
+    atomic_json(
+        config.DATA / "runs" / run["id"] / "daytime/result.json",
+        {
+            "tasks": [
+                {
+                    "status": "failed",
+                    "detail": "Active-time limit exhausted",
+                    "active_seconds": 1800,
+                    "verification_attempts": 0,
+                }
+            ],
+        },
+    )
+    with TestClient(app) as client:
+        suite = client.get("/api/health").json()["session_setup"]["suites"][
+            "visual-design"
+        ]
+    assert suite["phase"] == "not_passed"
+    assert "Active-time limit exhausted" in suite["detail"]
+    assert "30.0 active minutes" in suite["detail"]
+    assert "0 verification attempts" in suite["detail"]
 
 
 def test_startup_and_legacy_auto_setting_do_not_start_checks(setup_state, monkeypatch):

@@ -11,6 +11,7 @@ from . import config
 FAMILIES = {"session", "vision"}
 TIERS = {"small": (1800, 100), "medium": (5400, 300), "large": (14400, 800)}
 PROTOCOL_VERSION = 1
+EXECUTION_VERSION = 2
 ROOT = config.ROOT / "datasets" / "sessions"
 
 
@@ -111,6 +112,30 @@ def qualification_state(state):
             "Smoke run finished without passing qualification. "
             "Open the run for test evidence, then use Run again to retry."
         )
+        from common import read_json
+
+        for target in run.get("requested_targets", []):
+            path = config.DATA / "runs" / run["id"] / target / "result.json"
+            if path.exists():
+                summary = read_json(path)
+                failures = [
+                    row
+                    for row in summary.get("tasks", [])
+                    if row.get("status") != "passed"
+                ]
+                if failures:
+                    failure = failures[0]
+                    detail = (
+                        failure.get("detail")
+                        or failure.get("failure_kind")
+                        or "Task did not pass"
+                    )
+                    if failure.get("active_seconds") is not None:
+                        detail += (
+                            f" · {failure['active_seconds'] / 60:.1f} active minutes"
+                        )
+                    detail += f" · {failure.get('verification_attempts', 0)} verification attempts. Open the run for evidence."
+                    break
     progress = run.get("session_progress") or {}
     return dict(
         state,
@@ -188,8 +213,11 @@ def attach(profile):
         fixture_source_hash=evidence["source_hash"],
         session_image=evidence["image_id"],
         base_revisions=evidence["base_revisions"],
-        execution_adapter_version=PROTOCOL_VERSION,
-        acceptance_version=1,
+        execution_adapter_version=EXECUTION_VERSION,
+        engine=profile["engine"]
+        if profile["family"] == "vision"
+        else f"Harbor 0.23.0 / Studio session agent {EXECUTION_VERSION}",
+        acceptance_version=2,
         compaction_version=1,
         screenshot_renderer=catalog().get("screenshot_renderer")
         if suite == "vision-checks"
@@ -221,7 +249,7 @@ def builtin_profiles():
     common = {
         "version": 1,
         "builtin": True,
-        "engine": "Harbor 0.23.0 / Studio session agent 1",
+        "engine": f"Harbor 0.23.0 / Studio session agent {EXECUTION_VERSION}",
         "sizes": ["standard"],
         "parameters": {
             "temperature": 0,
@@ -267,6 +295,10 @@ def builtin_profiles():
         row["tasks"] = catalog()["vision_checks" if key == "vision-checks" else "tasks"]
         if key == "vision-checks":
             row["engine"] = "Studio vision checks 1 / streaming router"
+        if key == "visual-design":
+            # A self-contained prototype and the model's reasoning share the
+            # per-request output allowance. 8K truncated valid initial designs.
+            row["parameters"]["max_tokens"] = 16384
         if key != "vision-checks":
             row.update(
                 difficulty="small",

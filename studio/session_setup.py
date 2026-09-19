@@ -45,6 +45,10 @@ def controls(state):
             detail="Setup requested. Waiting for the controller; no new setup request is needed.",
             suites={},
         )
+    elif not active and state.get("phase") == "needs_attention":
+        state["detail"] += (
+            " Setup has stopped; select Start setup to retry the suites that have not passed."
+        )
     elif not active and state.get("phase") != "ready":
         detail = (
             "Last setup attempt failed: " + state["last_error"] + ". "

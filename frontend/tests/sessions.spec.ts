@@ -569,3 +569,24 @@ test("setup shows each suite's phase and opens the active smoke run", async ({
     page.getByRole("button", { name: "Run again", exact: true }),
   ).toBeVisible();
 });
+
+test("finished setup retains failure evidence after reload", async ({ page }) => {
+  await setup(page, base, {
+    phase: "needs_attention",
+    detail: "Offline preparation passed. 1 of 3 new suites ready. Setup has stopped; select Start setup to retry the suites that have not passed.",
+    can_start: true,
+    can_stop: false,
+    suites: {
+      "coding-sessions": { phase: "failed", detail: "Command timed out after 120 seconds", run_id: base.id },
+      "vision-checks": { phase: "ready" },
+      "visual-design": { phase: "not_passed", detail: "Active-time limit exhausted · 30.0 active minutes · 0 verification attempts. Open the run for evidence.", run_id: base.id },
+    },
+  });
+  await page.reload();
+  const banner = page.getByRole("status", { name: "Benchmark suite setup" });
+  await expect(banner).toContainText("Setup has stopped");
+  await expect(banner).toContainText("30.0 active minutes · 0 verification attempts");
+  await expect(banner).toContainText("Vision checks: Ready");
+  await expect(banner.getByRole("button", { name: "Start setup", exact: true })).toBeVisible();
+  await expect(banner.getByRole("button", { name: "Stop setup", exact: true })).toHaveCount(0);
+});

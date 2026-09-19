@@ -179,7 +179,16 @@ print(json.dumps(result))
 
         async def validate_task(task):
             async with semaphore:
-                for variant in ("base", "reference", "incomplete"):
+                variants = ("base", "reference", "incomplete")
+                if task["id"] == "issues-small":
+                    variants += (
+                        "reference-short-status-label",
+                        "reference-status-radio",
+                        "reference-status-button",
+                        "reference-status-tab",
+                        "reference-main-role",
+                    )
+                for variant in variants:
                     dest = validation / suite / task["id"] / variant
                     project = dest / "project"
                     shutil.copytree(ROOT / "base", project)
@@ -188,6 +197,41 @@ print(json.dumps(result))
                     )
                     if variant != "base":
                         reference.apply(project, task["id"])
+                    if variant == "reference-short-status-label":
+                        path = project / "frontend/src/App.tsx"
+                        path.write_text(
+                            path.read_text().replace("Status filter", "Status")
+                        )
+                    if variant == "reference-main-role":
+                        path = project / "frontend/src/App.tsx"
+                        source = path.read_text()
+                        assert "<main>" in source
+                        path.write_text(
+                            source.replace("<main>", '<div role="main">').replace(
+                                "</main>", "</div>"
+                            )
+                        )
+                    if variant in {
+                        "reference-status-radio",
+                        "reference-status-button",
+                        "reference-status-tab",
+                    }:
+                        path = project / "frontend/src/App.tsx"
+                        source = path.read_text()
+                        original = "<label>Status filter<select value={status} onChange={e=>setStatus(e.target.value)}>{['All','Open','Closed'].map(s=><option key={s}>{s}</option>)}</select></label>"
+                        assert original in source
+                        kind = variant.rsplit("-", 1)[1]
+                        if kind == "radio":
+                            replacement = "<fieldset><legend>Status</legend>{['All','Open','Closed'].map(s=><label key={s}><input type=\"radio\" name=\"status\" value={s} checked={status===s} onChange={()=>setStatus(s)}/>{s}</label>)}</fieldset>"
+                        else:
+                            role = "tablist" if kind == "tab" else "group"
+                            attrs = (
+                                'role="tab" aria-selected={status===s}'
+                                if kind == "tab"
+                                else "aria-pressed={status===s}"
+                            )
+                            replacement = f"<div role=\"{role}\" aria-label=\"Status filter\">{{['All','Open','Closed'].map(s=><button key={{s}} type=\"button\" {attrs} onClick={{()=>setStatus(s)}}>{{s}}</button>)}}</div>"
+                        path.write_text(source.replace(original, replacement))
                     if suite == "visual-design":
                         if variant != "base":
                             reference.visual_screens(project, task["id"])
@@ -263,11 +307,11 @@ print(json.dumps(result))
                         suite,
                         "fixture-validation",
                     )
-                    if bool(result["passed"]) != (variant == "reference"):
+                    if bool(result["passed"]) != variant.startswith("reference"):
                         raise RuntimeError(
                             f"{suite}/{task['id']}/{variant}: unexpected verifier result; see {dest}/result"
                         )
-                    if variant != "reference":
+                    if not variant.startswith("reference"):
                         failed = [
                             row for row in result.get("checks", []) if not row["passed"]
                         ]

@@ -364,6 +364,43 @@ def test_session_permissions_approval_and_verified_finish(state):
     assert row["phase_seconds"]["runtime_wait"] == 8
 
 
+@pytest.mark.parametrize("recovers", [True, False])
+def test_visual_critique_format_recovery_is_bounded_and_preserves_feedback(
+    state, recovers
+):
+    malformed = '{"approved":true,"findings":["No clipping"]'
+    replies = (
+        [malformed, {"approved": True, "findings": ["No clipping"]}]
+        if recovers
+        else [malformed] * 3
+    )
+    core, env, sent, _ = core_fixture(state, [PLAN, FINISH, *replies])
+    core.visual = True
+    renders = []
+    verifications = []
+
+    async def render(out):
+        renders.append(out)
+        return [session_catalog.ROOT / "screenshots/text-1.png"]
+
+    async def verify(number):
+        verifications.append(number)
+        return {"passed": True, "prototype_artifact": "prototype.html"}
+
+    env.render = render
+    core.verify = verify
+    row = asyncio.run(core.run())
+    assert len(renders) == 1
+    assert sent[3]["messages"][-2]["content"] == malformed
+    assert "final closing brace" in sent[3]["messages"][-1]["content"]
+    assert len(sent[2]["messages"]) == 3  # The first request stays immutable.
+    assert row["turns"] == (4 if recovers else 5)
+    assert row["active_seconds"] == row["turns"]
+    assert verifications == ([1] if recovers else [])
+    assert row["status"] == ("passed" if recovers else "failed")
+    assert row["failure_kind"] == (None if recovers else "invalid_response")
+
+
 def test_context_recovery_retains_contract_and_counts_compaction(state):
     core, env, sent, _ = core_fixture(
         state,
@@ -697,13 +734,18 @@ def test_concurrent_approval_race_has_one_winner(state):
     assert session_reviews.reviews(m["id"])[0]["decision"] in ("approve", "revise")
 
 
-def test_harbor_empty_tool_streams_are_valid(state):
+def test_harbor_command_wrapper_preserves_empty_streams(state):
     from types import SimpleNamespace
     from studio.session_environment import SessionEnvironment
 
     class Environment:
         async def exec(self, *args, **kwargs):
-            return SimpleNamespace(return_code=0, stdout=None, stderr=None)
+            assert kwargs["timeout_sec"] == 130
+            return SimpleNamespace(
+                return_code=0,
+                stdout='{"exit_code":0,"stdout":"","stderr":""}',
+                stderr=None,
+            )
 
     m = manifest(state)
     env = SessionEnvironment(m, session_catalog.tasks(m["profile_spec"])[0], state)
@@ -712,6 +754,137 @@ def test_harbor_empty_tool_streams_are_valid(state):
         env.action({"action": "exec", "command": "true"}, read_only=False)
     )
     assert json.loads(result) == {"exit_code": 0, "stdout": "", "stderr": ""}
+
+
+def test_action_wrappers_continue_without_wasting_turns(state):
+    core, env, sent, _ = core_fixture(
+        state,
+        [
+            "<tool_call>\n"
+            + json.dumps(PLAN)
+            + "\n</parameter></function></tool_call>",
+            "Run the existing checks:\n"
+            + json.dumps({"action": "exec", "command": "true"}),
+            "```json\n" + json.dumps(FINISH) + "\n```",
+        ],
+    )
+    row = asyncio.run(core.run())
+    assert row["status"] == "passed" and row["turns"] == 3
+    assert env.actions == [({"action": "exec", "command": "true"}, False)]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '[{"action":"finish"}]',
+        '{"action":"finish"}{"action":"exec"}',
+        '{"action":"finish"} then do something else',
+        '{"action":"read","action":"exec"}',
+        '<tool_call>\n{"action":"write","content":"incomplete',
+        '```json\n{"action":"finish"}\n```\n{"action":"exec"}',
+    ],
+)
+def test_action_parser_rejects_ambiguous_or_incomplete_actions(value):
+    from studio.session_core import parse_json
+
+    with pytest.raises(ValueError):
+        parse_json(value)
+
+
+def test_action_parser_preserves_file_contents():
+    from studio.session_core import parse_json
+
+    action = {"action": "write", "content": 'const x = {a: "</tool_call>"};\n```'}
+    assert parse_json("<tool_call>\n" + json.dumps(action)) == action
+
+
+def test_native_tool_parameters_are_actions_with_phase_permissions(state):
+    from studio.session_core import parse_action
+
+    text = '<tool_call>\n<function=write>\n<parameter=path>\nfrontend/test.mjs\n</parameter>\n<parameter=content>\nconst obj = {foo: "bar"};\n</parameter>\n</function>\n</tool_call>'
+    assert parse_action(text) == {
+        "action": "write",
+        "path": "frontend/test.mjs",
+        "content": '\nconst obj = {foo: "bar"};\n',
+    }
+    core, env, _, _ = core_fixture(state, [text, PLAN, text, FINISH])
+    assert asyncio.run(core.run())["status"] == "passed"
+    assert [read_only for _, read_only in env.actions] == [True, False]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "<tool_call><function=exec><parameter=command>true</parameter></function>",
+        "<tool_call><function=exec><parameter=command>true</parameter><parameter=command>false</parameter></function></tool_call>",
+        "<tool_call><function=unknown></function></tool_call>",
+        "<tool_call><function=exec></function></tool_call>",
+        "<tool_call><function=exec><parameter=command>true</parameter></function></tool_call><tool_call><function=exec><parameter=command>false</parameter></function></tool_call>",
+    ],
+)
+def test_native_tool_parser_rejects_ambiguous_or_incomplete_calls(value):
+    from studio.session_core import parse_action
+
+    with pytest.raises(ValueError):
+        parse_action(value)
+
+
+def test_session_execution_change_breaks_comparability(state):
+    current = manifest(state)
+    previous = copy.deepcopy(current)
+    previous["profile_spec"]["execution_adapter_version"] = 1
+    assert current["profile_spec"]["execution_adapter_version"] == 2
+    assert not results.comparable(previous, current)
+
+
+def test_tool_deadline_is_recoverable_but_harbor_failure_is_not(state):
+    from types import SimpleNamespace
+    from studio.session_environment import SessionEnvironment
+
+    class Environment:
+        async def exec(self, *args, **kwargs):
+            return SimpleNamespace(
+                return_code=0,
+                stdout=json.dumps(
+                    {
+                        "exit_code": 124,
+                        "timed_out": True,
+                        "stdout": "partial",
+                        "stderr": "",
+                    }
+                ),
+            )
+
+    core, _, sent, _ = core_fixture(
+        state, [PLAN, {"action": "exec", "command": "sleep 999"}, FINISH]
+    )
+    environment = SessionEnvironment(core.manifest, core.task, state)
+    environment.env = Environment()
+    core.environment = environment
+    assert asyncio.run(core.run())["status"] == "passed"
+    assert '"timed_out": true' in sent[-1]["messages"][-1]["content"]
+
+    class BrokenEnvironment:
+        async def exec(self, *args, **kwargs):
+            raise RuntimeError("Command timed out after 130 seconds")
+
+    environment.env = BrokenEnvironment()
+    with pytest.raises(RuntimeError, match="130 seconds"):
+        asyncio.run(
+            environment.action({"action": "exec", "command": "true"}, read_only=False)
+        )
+
+    class TerminatedSupervisor:
+        async def exec(self, *args, **kwargs):
+            return SimpleNamespace(return_code=143, stdout=None, stderr=None)
+
+    environment.env = TerminatedSupervisor()
+    result = json.loads(
+        asyncio.run(
+            environment.action({"action": "exec", "command": "true"}, read_only=False)
+        )
+    )
+    assert result["exit_code"] == 143 and "signal" in result["detail"]
 
 
 def test_preparation_preserves_concurrent_suite_qualification(state):
