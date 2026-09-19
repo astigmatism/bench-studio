@@ -65,6 +65,11 @@ class Launch(BaseModel):
     repetitions: int | None = Field(default=None, strict=True)
     review_mode: str | None = None
     qualification: bool = False
+    setup_request_id: str | None = None
+
+
+class SetupStart(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=100)
 
 
 class Custom(BaseModel):
@@ -130,6 +135,20 @@ def models():
         )
 
 
+@app.post("/api/session-setup/start", status_code=202)
+def start_session_setup(body: SetupStart):
+    from . import session_control
+
+    return session_control.start(body.idempotency_key)
+
+
+@app.post("/api/session-setup/stop", status_code=202)
+def stop_session_setup():
+    from . import session_control
+
+    return session_control.stop()
+
+
 @app.get("/api/profiles")
 def list_profiles():
     return profiles.all_profiles()
@@ -165,6 +184,8 @@ def get_run(rid: str):
 
 @app.post("/api/runs", status_code=202)
 def launch(body: Launch):
+    if body.setup_request_id and not body.qualification:
+        raise ValueError("Setup ownership is only valid for qualification runs")
     if body.mode not in ["sequential", "parallel"]:
         raise ValueError("Invalid execution mode")
     if len(set(body.targets)) != len(body.targets):
@@ -249,6 +270,8 @@ def launch(body: Launch):
         "progress": "Waiting for an idle machine",
         "revision": config.REVISION,
     }
+    if body.setup_request_id:
+        m["setup_request_id"] = body.setup_request_id
     with db.transaction() as c:
         prior = c.execute(
             "SELECT document FROM runs WHERE idempotency_key=?", (body.idempotency_key,)
@@ -257,6 +280,10 @@ def launch(body: Launch):
             return db.unpack(prior)
         if (config.DATA / ".maintenance").exists():
             raise HTTPException(409, "Application update in progress")
+        if body.setup_request_id:
+            from .session_control import require_active
+
+            require_active(c, body.setup_request_id)
         db.put_run(c, m, body.idempotency_key)
     return m
 

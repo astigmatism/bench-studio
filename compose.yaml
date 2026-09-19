@@ -53,7 +53,6 @@ services:
       RUNTIME_URL: "${RUNTIME_URL}"
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "1"
-      SESSION_AUTO_SETUP: "1"
       SESSION_IMAGE: local/bench-studio-session:current
       SESSION_SMOKE_TARGET: "${SESSION_SMOKE_TARGET:-daytime}"
     mem_limit: 4g

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from common import atomic_json
-from studio import config, db, session_catalog, discovery
+from studio import config, db, session_catalog, discovery, session_control
 from studio.api import app
 from studio.session_setup import SessionSetup, SUITES
 
@@ -48,10 +48,11 @@ def setup_state(tmp_path, monkeypatch):
         "studio.session_setup.subprocess.check_output",
         lambda *a, **k: "sha256:prepared\n",
     )
+    session_control.start("test-explicit-start")
     return evidence
 
 
-def test_automatic_qualification_is_durable_sequential_and_not_replayed(setup_state):
+def test_requested_qualification_is_durable_sequential_and_not_replayed(setup_state):
     setup = SessionSetup()
     assert setup.tick() is False
     runs = db.runs()
@@ -64,7 +65,8 @@ def test_automatic_qualification_is_durable_sequential_and_not_replayed(setup_st
         for r in runs
     )
     assert not any(session_catalog.readiness(s)["ready"] for s in SUITES)
-    SessionSetup().tick()
+    setup.next_check = 0
+    setup.tick()
     assert len(db.runs()) == 3
     for run in runs:
         run.update(status="failed", error="Model failed qualification")
@@ -75,6 +77,145 @@ def test_automatic_qualification_is_durable_sequential_and_not_replayed(setup_st
     state = json.loads((config.DATA / "session-setup.json").read_text())
     assert all(s["phase"] == "failed" for s in state["suites"].values())
     assert state["phase"] == "needs_attention"
+
+
+def test_startup_and_legacy_auto_setting_do_not_start_checks(setup_state, monkeypatch):
+    db.set_state(session_control.KEY, {})
+    monkeypatch.setenv("SESSION_AUTO_SETUP", "1")
+    calls = []
+    monkeypatch.setattr(
+        "studio.session_setup.subprocess.Popen", lambda *a, **k: calls.append(a)
+    )
+    monkeypatch.setattr(discovery, "discover", lambda: calls.append("discovery"))
+    (config.DATA / "session-preparation.json").unlink()
+    for _ in range(2):
+        setup = SessionSetup()
+        assert setup.tick() is False
+        assert setup.tick() is False
+    assert not calls and not db.runs()
+    with TestClient(app) as client:
+        for _ in range(2):
+            state = client.get("/api/health").json()["session_setup"]
+            assert state["phase"] == "paused" and state["can_start"]
+            assert not state["can_stop"]
+
+
+def test_start_stop_api_is_idempotent_and_only_cancels_setup_jobs(setup_state):
+    db.set_state(session_control.KEY, {})
+    with TestClient(app) as client:
+        body = {"idempotency_key": "explicit-start-1"}
+        first = client.post("/api/session-setup/start", json=body).json()
+        assert client.post("/api/session-setup/start", json=body).json() == first
+        assert client.get("/api/health").json()["session_setup"]["phase"] == "requested"
+        setup = SessionSetup()
+        setup.tick()
+        assert len(db.runs()) == 3
+        with db.transaction() as c:
+            db.put_run(c, {"id": "user-job", "status": "queued", "created_at": "now"})
+        client.post("/api/session-setup/stop", json={}).raise_for_status()
+        assert all(
+            r["status"] == "cancelled" for r in db.runs() if r["id"] != "user-job"
+        )
+        assert db.get_run("user-job")["status"] == "queued"
+        assert not setup.sync_control()
+        assert not SessionSetup().tick()
+        assert len(db.runs()) == 4
+        assert not client.post("/api/session-setup/start", json=body).json()["active"]
+        second = client.post(
+            "/api/session-setup/start", json={"idempotency_key": "explicit-start-2"}
+        ).json()
+        assert second["active"] and second["id"] != first["id"]
+        SessionSetup().tick()
+        assert len(db.runs()) == 7
+
+
+def test_stop_preparation_releases_update_lock_and_never_resumes_on_restart(
+    setup_state, monkeypatch
+):
+    import signal
+
+    (config.DATA / "session-preparation.json").unlink()
+    process = SimpleNamespace(pid=54321, poll=lambda: None, wait=lambda **kw: None)
+    calls = []
+    monkeypatch.setattr(
+        "studio.session_setup.subprocess.Popen",
+        lambda *a, **k: calls.append("spawn") or process,
+    )
+    monkeypatch.setattr("studio.session_setup.os.killpg", lambda *a: calls.append(a))
+    monkeypatch.setattr(
+        SessionSetup, "cleanup", lambda self, owner=None: calls.append("cleanup")
+    )
+    setup = SessionSetup()
+    assert setup.tick()
+    with TestClient(app) as client:
+        client.post("/api/session-setup/stop", json={}).raise_for_status()
+        state = client.get("/api/health").json()["session_setup"]
+        assert state["phase"] == "stopping" and not state["can_start"]
+        assert not setup.sync_control()
+        state = client.get("/api/health").json()["session_setup"]
+        assert state["phase"] == "paused" and state["can_start"]
+    assert (54321, signal.SIGTERM) in calls and "cleanup" in calls
+    assert setup.child is None
+    with (config.DATA / ".execution.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert not SessionSetup().tick()
+    assert calls.count("spawn") == 1 and not db.runs()
+
+
+@pytest.mark.parametrize("change_revision", [False, True])
+def test_restart_and_update_require_fresh_setup_request(
+    setup_state, monkeypatch, change_revision
+):
+    SessionSetup().tick()
+    if change_revision:
+        monkeypatch.setattr(config, "REVISION", "next-deployment")
+    assert not SessionSetup().tick()
+    assert not db.state(session_control.KEY)["active"]
+    assert db.state(session_control.KEY)["outcome"] == "interrupted"
+    assert len(db.runs()) == 3
+    assert all(m["status"] == "cancelled" for m in db.runs())
+
+
+def test_stop_marks_active_setup_for_cancellation_but_leaves_user_runs(setup_state):
+    setup = SessionSetup()
+    setup.tick()
+    run = db.runs()[0]
+    run["status"] = "running"
+    db.update_run(run)
+    with db.transaction() as c:
+        db.put_run(c, {"id": "user-run", "status": "running", "created_at": "now"})
+    session_control.stop()
+    assert not setup.sync_control()
+    assert db.get_run(run["id"])["cancel_requested"]
+    assert not db.get_run("user-run").get("cancel_requested")
+    with TestClient(app) as client:
+        assert client.get("/api/health").json()["session_setup"]["phase"] == "stopping"
+
+
+def test_legacy_automatic_queue_is_cancelled_during_upgrade(setup_state):
+    db.set_state(session_control.KEY, {})
+    with db.transaction() as c:
+        db.put_run(
+            c,
+            {"id": "legacy-auto", "status": "queued", "created_at": "now"},
+            "automatic-qualification-old",
+        )
+    assert not SessionSetup().tick()
+    assert db.get_run("legacy-auto")["status"] == "cancelled"
+
+
+def test_stop_racing_qualification_launch_cannot_leave_queued_work(
+    setup_state, monkeypatch
+):
+    discover = discovery.discover
+
+    def stop_during_discovery():
+        session_control.stop()
+        return discover()
+
+    monkeypatch.setattr(discovery, "discover", stop_during_discovery)
+    SessionSetup().tick()
+    assert not db.runs()
 
 
 @pytest.mark.parametrize(
@@ -151,7 +292,8 @@ def test_stale_preparation_does_not_report_ready_or_smoke_failure(setup_state):
     atomic_json(config.DATA / "session-preparation.json", setup_state)
     with TestClient(app) as client:
         state = client.get("/api/health").json()["session_setup"]
-    assert state["phase"] == "waiting_for_preparation"
+    assert state["phase"] == "paused"
+    assert state["can_start"] and not state["can_stop"]
     assert not state["suites"]
     assert not session_catalog.readiness("coding-sessions")["ready"]
 
@@ -285,7 +427,7 @@ def test_changed_queued_execution_image_is_rejected_before_launch(
         session_runner.launch({"profile_spec": old})
 
 
-def test_old_updater_build_and_recreate_commands_include_new_setup(tmp_path):
+def test_old_updater_build_and_recreate_commands_keep_setup_manual(tmp_path):
     """The already-installed updater reads the newly fetched Compose file."""
     project = Path(__file__).resolve().parents[1]
     env = dict(
@@ -310,7 +452,7 @@ def test_old_updater_build_and_recreate_commands_include_new_setup(tmp_path):
         == "datasets/sessions/Dockerfile"
     )
     runner = services["runner"]
-    assert runner["environment"]["SESSION_AUTO_SETUP"] == "1"
+    assert "SESSION_AUTO_SETUP" not in runner["environment"]
     assert runner["environment"]["SESSION_SMOKE_TARGET"] == "daytime"
     assert any(v.get("target", "").endswith("/data") for v in runner["volumes"])
     labelled = [

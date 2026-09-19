@@ -166,6 +166,7 @@ function App() {
     [launchProfile, setLaunchProfile] = useState("coding"),
     [rerun, setRerun] = useState<Obj | null>(null),
     [connection, setConnection] = useState(true),
+    [setupBusy, setSetupBusy] = useState(false),
     [refresh, setRefresh] = useState(0);
   const load = useCallback(async () => {
     try {
@@ -241,6 +242,18 @@ function App() {
     if (confirm(`Stop ${runName(r)}? Partial results will be retained.`))
       await mutate(`/runs/${r.id}/cancel`);
   };
+  const setupAction = async (action: "start" | "stop") => {
+    if (setupBusy) return;
+    setSetupBusy(true);
+    try {
+      await mutate(
+        `/session-setup/${action}`,
+        action === "start" ? { idempotency_key: crypto.randomUUID() } : {},
+      );
+    } finally {
+      setSetupBusy(false);
+    }
+  };
   const current = runs.find((r) => r.id === detail);
   return (
     <div id="app">
@@ -288,6 +301,29 @@ function App() {
               <strong>Benchmark suite setup: </strong>
               {health.session_setup.detail}
             </div>
+            {(health.session_setup.can_start ||
+              health.session_setup.can_stop) && (
+              <div className="bs-setup-suite">
+                {health.session_setup.can_start && (
+                  <button
+                    className="bs-button"
+                    disabled={setupBusy}
+                    onClick={() => setupAction("start")}
+                  >
+                    Start setup
+                  </button>
+                )}
+                {health.session_setup.can_stop && (
+                  <button
+                    className="bs-button"
+                    disabled={setupBusy}
+                    onClick={() => setupAction("stop")}
+                  >
+                    Stop setup
+                  </button>
+                )}
+              </div>
+            )}
             {Object.entries(health.session_setup.suites || {}).map(
               ([suite, value]) => {
                 const state = value as Obj;

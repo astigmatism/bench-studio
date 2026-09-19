@@ -140,9 +140,15 @@ def readiness(suite, *, evidence=None, setup=None):
     ready = prepared and bool(
         evidence.get("suites", {}).get(suite, {}).get("qualified_run")
     )
-    reason = "Prepare and validate this suite with scripts/prepare-sessions.py, then qualify it with a runtime smoke run."
+    reason = "Select Start setup to validate this suite and run its qualification smoke test. No checks start automatically."
     if setup:
-        if setup.get("phase") in {"preparing", "failed", "interrupted"}:
+        if setup.get("phase") in {
+            "preparing",
+            "failed",
+            "interrupted",
+            "paused",
+            "requested",
+        }:
             reason = setup["detail"]
         elif prepared and not ready:
             state = qualification_state(setup.get("suites", {}).get(suite, {}))

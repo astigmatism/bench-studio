@@ -407,6 +407,8 @@ def cycle():
     db.set_state(
         "runner", {"updated_at": now(), "revision": config.REVISION, "pid": os.getpid()}
     )
+    if ROLLOUT:
+        ROLLOUT.sync_control()
     active = [m for m in db.runs() if m["status"] in db.ACTIVE | db.WAITING]
     for m in active:
         try:
@@ -538,10 +540,9 @@ def main():
     signal.signal(signal.SIGINT, request_shutdown)
     with (config.DATA / ".runner.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if config.SESSION_AUTO_SETUP:
-            from .session_setup import SessionSetup
+        from .session_setup import SessionSetup
 
-            ROLLOUT = SessionSetup()
+        ROLLOUT = SessionSetup()
         try:
             while not STOP:
                 try:

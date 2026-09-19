@@ -212,7 +212,7 @@ def deploy():
                 raise
             print("Success: healthy Bench Studio " + revision, flush=True)
             print(
-                "The controller will prepare new benchmark fixtures and queue runtime qualification. Follow suite setup in Bench Studio.",
+                "No benchmark checks start automatically. Use Start setup in Bench Studio when you want to prepare and qualify new suites.",
                 flush=True,
             )
         finally:

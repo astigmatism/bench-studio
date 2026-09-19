@@ -1,4 +1,4 @@
-"""Provision new suites after deployment without delaying application health.
+"""Prepare and qualify suites only after an explicit, durable setup request.
 
 The controller owns this state machine. Offline preparation holds the same lock
 as updates and launches; live qualification uses the ordinary durable queue.
@@ -15,7 +15,7 @@ import sys
 import time
 import uuid
 from common import atomic_json, now, read_json
-from . import config, db
+from . import config, db, session_control
 from .session_catalog import (
     ROOT,
     PROTOCOL_VERSION,
@@ -26,6 +26,33 @@ from .session_catalog import (
 )
 
 SUITES = ("coding-sessions", "vision-checks", "visual-design")
+PAUSED_DETAIL = "Suite setup is idle. Select Start setup to validate fixtures and run model smoke tests. Updates and restarts do not start checks. Existing benchmark profiles remain available."
+
+
+def controls(state):
+    control = db.state(session_control.KEY, {})
+    active = bool(control.get("active") and control.get("revision") == config.REVISION)
+    state.update(can_start=not active, can_stop=active)
+    if not active and (state.get("phase") == "preparing" or session_control.stopping()):
+        state.update(
+            phase="stopping",
+            detail="Stopping suite setup and its benchmarks. Evidence is retained; updates can proceed after cleanup finishes.",
+            can_start=False,
+        )
+    elif active and state.get("request_id") != control["id"]:
+        state.update(
+            phase="requested",
+            detail="Setup requested. Waiting for the controller; no new setup request is needed.",
+            suites={},
+        )
+    elif not active and state.get("phase") != "ready":
+        detail = (
+            "Last setup attempt failed: " + state["last_error"] + ". "
+            if state.get("last_error")
+            else ""
+        ) + PAUSED_DETAIL
+        state.update(phase="paused", detail=detail)
+    return state
 
 
 def qualification_summary(suites):
@@ -62,10 +89,17 @@ def status():
     """Present current qualification progress without scheduling or inference."""
     path = config.DATA / "session-setup.json"
     if not path.exists():
-        return None
+        return controls({"phase": "paused", "detail": PAUSED_DETAIL, "suites": {}})
     state = read_json(path)
-    if state.get("phase") not in {"ready", "qualifying", "waiting", "needs_attention"}:
-        return state
+    if state.get("phase") not in {
+        "ready",
+        "qualifying",
+        "waiting",
+        "needs_attention",
+        "paused",
+        "requested",
+    }:
+        return controls(state)
     evidence = receipt()
     suites = {}
     for suite, saved in state.get("suites", {}).items():
@@ -76,7 +110,7 @@ def status():
                 detail="The preparation receipt no longer matches this deployment. Waiting for the controller to validate fixtures before qualification.",
                 suites={},
             )
-            return state
+            return controls(state)
         if readiness_state["ready"]:
             suites[suite] = {
                 "phase": "ready",
@@ -87,7 +121,7 @@ def status():
     if suites:
         phase, detail = qualification_summary(suites)
         state.update(phase=phase, detail=detail, suites=suites)
-    return state
+    return controls(state)
 
 
 class SessionSetup:
@@ -97,10 +131,70 @@ class SessionSetup:
         self.image = None
         self.owner = "session-setup-" + uuid.uuid4().hex[:16]
         self.failed = False
+        self.request_id = None
+        self.inactive_published = False
         self.next_check = 0
         self.state = {"revision": config.REVISION, "owner": self.owner}
         path = config.DATA / "session-setup.json"
         self.previous = read_json(path) if path.exists() else {}
+
+    def inspect_image(self):
+        if self.image is None:
+            self.image = subprocess.check_output(
+                [
+                    "docker",
+                    "image",
+                    "inspect",
+                    config.SESSION_IMAGE,
+                    "--format",
+                    "{{.Id}}",
+                ],
+                text=True,
+                timeout=15,
+            ).strip()
+        self.state["expected_image_id"] = self.image
+
+    def sync_control(self):
+        """Honor Stop even while a benchmark or preparation holds the scheduler."""
+        control = session_control.claim(self.owner)
+        if self.previous.get("phase") == "preparing" and self.previous.get("owner"):
+            self.cleanup(self.previous["owner"])
+        self.previous = {}
+        if not control.get("active"):
+            self.stop()
+            self.request_id = None
+            if not self.inactive_published:
+                try:
+                    self.inspect_image()
+                except Exception:
+                    self.state["expected_image_id"] = "unavailable"
+                self.publish(
+                    "paused",
+                    PAUSED_DETAIL,
+                    request_id=None,
+                    suites=self.state.get("suites")
+                    or {s: {"phase": "pending"} for s in SUITES},
+                )
+                self.inactive_published = True
+            return False
+        if self.request_id != control["id"]:
+            self.stop()
+            self.failed = False
+            self.next_check = 0
+            self.image = None
+            self.request_id = control["id"]
+            self.state = {
+                "revision": config.REVISION,
+                "owner": self.owner,
+                "request_id": self.request_id,
+            }
+            self.publish(
+                "requested",
+                "Setup requested. Waiting for the machine to be available.",
+                suites={s: {"phase": "pending"} for s in SUITES},
+            )
+        self.inactive_published = False
+        return True
 
     def publish(self, phase, detail, **values):
         self.state.update(phase=phase, detail=detail, updated_at=now(), **values)
@@ -152,11 +246,13 @@ class SessionSetup:
                 self.release()
                 self.publish(
                     "interrupted",
-                    "Fixture preparation interrupted; evidence retained. It will retry after controller restart.",
+                    "Fixture preparation stopped; evidence retained. Select Start setup to try again.",
                 )
 
     def tick(self):
         """Return True while offline checks reserve the machine."""
+        if not self.sync_control():
+            return False
         if self.failed:
             return False
         try:
@@ -167,7 +263,10 @@ class SessionSetup:
                 self.stop()
             finally:
                 self.release()
-                self.publish("failed", "Automatic suite setup failed: " + str(exc))
+                self.publish(
+                    "failed", "Suite setup failed: " + str(exc), last_error=str(exc)
+                )
+                session_control.finish(self.request_id, "failed")
             return False
 
     def advance(self):
@@ -188,22 +287,7 @@ class SessionSetup:
         if time.monotonic() < self.next_check:
             return False
         self.next_check = time.monotonic() + 15
-        if self.image is None:
-            if self.previous.get("phase") == "preparing" and self.previous.get("owner"):
-                self.cleanup(self.previous["owner"])
-            self.image = subprocess.check_output(
-                [
-                    "docker",
-                    "image",
-                    "inspect",
-                    config.SESSION_IMAGE,
-                    "--format",
-                    "{{.Id}}",
-                ],
-                text=True,
-                timeout=15,
-            ).strip()
-            self.state["expected_image_id"] = self.image
+        self.inspect_image()
         evidence = receipt()
         prepared = (
             evidence.get("image_id") == self.image
@@ -278,6 +362,7 @@ class SessionSetup:
                 for m in db.runs()
                 if (
                     m.get("profile_spec", {}).get("qualification")
+                    and m.get("setup_request_id") == self.request_id
                     and m["profile_spec"].get("suite") == suite
                     and m["profile_spec"].get("fixture_source_hash")
                     == evidence["source_hash"]
@@ -321,7 +406,13 @@ class SessionSetup:
                 continue
             key = hashlib.sha256(
                 json.dumps(
-                    [config.REVISION, suite, evidence["source_hash"], self.image],
+                    [
+                        config.REVISION,
+                        suite,
+                        evidence["source_hash"],
+                        self.image,
+                        self.request_id,
+                    ],
                     sort_keys=True,
                 ).encode()
             ).hexdigest()
@@ -336,8 +427,9 @@ class SessionSetup:
                         repetitions=1,
                         review_mode="unattended",
                         qualification=True,
-                        idempotency_key="automatic-qualification-" + key,
-                        note="Deployment qualification: one representative task; not a model ranking.",
+                        setup_request_id=self.request_id,
+                        idempotency_key="setup-qualification-" + key,
+                        note="User-requested qualification: one representative task; not a model ranking.",
                     )
                 )
             except Exception as exc:
@@ -349,4 +441,10 @@ class SessionSetup:
             suites[suite] = {"phase": "queued", "run_id": run["id"]}
         phase, detail = qualification_summary(suites)
         self.publish(phase, detail, suites=suites)
+        if all(
+            s["phase"]
+            in db.TERMINAL | {"ready", "blocked", "not_passed", "missing_run"}
+            for s in suites.values()
+        ):
+            session_control.finish(self.request_id, phase)
         return False

@@ -55,7 +55,24 @@ async function setup(page: any, run: any = base, setupState: any = null) {
         runner: {},
         session_setup: setupState,
       };
-    else if (path === "/api/models")
+    else if (path === "/api/session-setup/start") {
+      setupState = {
+        phase: "requested",
+        detail: "Setup requested. Waiting for the controller.",
+        can_start: false,
+        can_stop: true,
+      };
+      body = { active: true };
+    } else if (path === "/api/session-setup/stop") {
+      setupState = {
+        phase: "paused",
+        detail:
+          "Suite setup is idle. Updates and restarts do not start checks.",
+        can_start: true,
+        can_stop: false,
+      };
+      body = { active: false };
+    } else if (path === "/api/models")
       body = {
         runtime: { ready: true },
         models: [
@@ -117,6 +134,64 @@ async function setup(page: any, run: any = base, setupState: any = null) {
   });
   await page.goto("/");
 }
+test("setup only starts on click and stop persists across browser reloads", async ({
+  page,
+}) => {
+  const mutations: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST") mutations.push(new URL(r.url()).pathname);
+  });
+  await setup(page, base, {
+    phase: "paused",
+    detail:
+      "Suite setup is idle. Select Start setup to validate fixtures and run model smoke tests. Updates and restarts do not start checks.",
+    can_start: true,
+    can_stop: false,
+  });
+  await expect(
+    page.getByRole("button", { name: "Start setup", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Start setup", exact: true }),
+  ).toBeVisible();
+  expect(mutations).toEqual([]);
+  const start = page.waitForRequest(
+    (r) => r.url().endsWith("/session-setup/start") && r.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Start setup", exact: true }).click();
+  expect((await start).postDataJSON().idempotency_key).toBeTruthy();
+  await expect(
+    page.getByRole("button", { name: "Stop setup", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Stop setup", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Stop setup", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Start setup", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Start setup", exact: true }),
+  ).toBeVisible();
+  expect(mutations).toEqual([
+    "/api/session-setup/start",
+    "/api/session-setup/stop",
+  ]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/setup-manual-mobile.png",
+    fullPage: true,
+  });
+});
+
 test("launch session tiers, selection and repetitions", async ({ page }) => {
   await setup(page);
   await page

@@ -68,3 +68,12 @@ Read-only inspection of production after its Portal update confirmed that automa
 - Session/setup tests: **56 passed**, including progress while the coordinator is paused, idle-queue reasons, blocked/failed qualification, independent unlocks and stale preparation receipts.
 - Browser tests: **13 passed**, including live setup details, failure/retry navigation and mobile layout. The production TypeScript/Vite build passed.
 - Production inference was left running; no qualification was bypassed and no runtime configuration was changed.
+
+## Explicit setup controls — 2026-09-19 UTC
+
+The earlier display fix did not disable automatic work. Production rebuilt the session image and began preparation again after the next update. Automatic startup setup is now removed: the controller requires a durable Start setup request, and Stop setup cancels only its owned preparation and qualification runs. A controller restart or application update interrupts that request instead of replaying it; browser closure does not. The retired environment switch cannot enable automatic work.
+
+- Full Python suite: **266 passed, 3 existing skips**. Coverage includes idle startup, legacy configuration and queued-job migration, explicit-start idempotency, stop/launch races, scoped cancellation, update-lock release, and restart/revision interruption.
+- Browser suite: **14 passed**, including no setup mutation on app load/reload, explicit start/stop, persistent stopped state, run navigation and mobile layout. Production frontend and runner image builds passed.
+- A real Docker controller rehearsal started idle with the legacy auto-setup variable set, began offline preparation only after an API start request, stopped and removed its owned containers, released the execution lock, and remained idle after restart. No model endpoint was reachable in this rehearsal and no inference jobs were queued. Both API and controller used Linux processes for SQLite WAL access. Evidence: `data/manual-setup-rehearsal/result.json`.
+- On production, the existing runner was recreated with automatic setup disabled, without changing its application image or the model services. Preparation containers were removed, the update lock was confirmed free, the checkout remained clean, and no active or queued Bench Studio runs remained. The permanent code change is delivered through the user's normal Portal update workflow.
