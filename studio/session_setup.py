@@ -16,9 +16,78 @@ import time
 import uuid
 from common import atomic_json, now, read_json
 from . import config, db
-from .session_catalog import ROOT, PROTOCOL_VERSION, digest_tree, readiness, receipt
+from .session_catalog import (
+    ROOT,
+    PROTOCOL_VERSION,
+    digest_tree,
+    qualification_state,
+    readiness,
+    receipt,
+)
 
 SUITES = ("coding-sessions", "vision-checks", "visual-design")
+
+
+def qualification_summary(suites):
+    phases = {s["phase"] for s in suites.values()}
+    if phases == {"ready"}:
+        return "ready", "Benchmark suites are ready."
+    count = sum(s["phase"] == "ready" for s in suites.values())
+    prefix = f"Offline preparation passed. {count} of {len(suites)} new suites ready. "
+    suffix = " Each suite unlocks after a passing smoke run. Existing benchmark profiles remain available."
+    if phases & {
+        "failed",
+        "interrupted",
+        "invalid",
+        "cancelled",
+        "blocked",
+        "not_passed",
+        "missing_run",
+    }:
+        return (
+            "needs_attention",
+            prefix
+            + "Some smoke runs need attention; open their results for details and retry when resolved."
+            + suffix,
+        )
+    if phases & (db.ACTIVE | db.WAITING):
+        return "qualifying", prefix + "Live smoke tests run one at a time." + suffix
+    return (
+        "waiting",
+        prefix + "Smoke tests are queued or waiting for an available model." + suffix,
+    )
+
+
+def status():
+    """Present current qualification progress without scheduling or inference."""
+    path = config.DATA / "session-setup.json"
+    if not path.exists():
+        return None
+    state = read_json(path)
+    if state.get("phase") not in {"ready", "qualifying", "waiting", "needs_attention"}:
+        return state
+    evidence = receipt()
+    suites = {}
+    for suite, saved in state.get("suites", {}).items():
+        readiness_state = readiness(suite, evidence=evidence, setup=state)
+        if not readiness_state["prepared"]:
+            state.update(
+                phase="waiting_for_preparation",
+                detail="The preparation receipt no longer matches this deployment. Waiting for the controller to validate fixtures before qualification.",
+                suites={},
+            )
+            return state
+        if readiness_state["ready"]:
+            suites[suite] = {
+                "phase": "ready",
+                "run_id": evidence["suites"][suite]["qualified_run"],
+            }
+        else:
+            suites[suite] = qualification_state(saved)
+    if suites:
+        phase, detail = qualification_summary(suites)
+        state.update(phase=phase, detail=detail, suites=suites)
+    return state
 
 
 class SessionSetup:
@@ -218,11 +287,7 @@ class SessionSetup:
             ]
             if matches:
                 run = matches[0]
-                suites[suite] = {
-                    "phase": run["status"],
-                    "run_id": run["id"],
-                    "detail": run.get("error") or run.get("progress"),
-                }
+                suites[suite] = qualification_state({"run_id": run["id"]})
                 continue
             try:
                 models = discovery.discover()["models"]
@@ -282,12 +347,6 @@ class SessionSetup:
                 }
                 continue
             suites[suite] = {"phase": "queued", "run_id": run["id"]}
-        complete = all(s["phase"] == "ready" for s in suites.values())
-        self.publish(
-            "ready" if complete else "qualifying",
-            "Benchmark suites are ready."
-            if complete
-            else "Offline preparation passed. Live suite qualification uses the normal idle queue; suites remain gated until their smoke run passes.",
-            suites=suites,
-        )
+        phase, detail = qualification_summary(suites)
+        self.publish(phase, detail, suites=suites)
         return False

@@ -105,14 +105,15 @@ def require_run(rid):
 
 @app.get("/api/health")
 def health():
+    from .session_setup import status as setup_status
+
     with db.connect() as c:
         c.execute("SELECT 1")
-    setup = config.DATA / "session-setup.json"
     return {
         "ok": True,
         "revision": config.REVISION,
         "runner": db.state("runner"),
-        "session_setup": read_json(setup) if setup.exists() else None,
+        "session_setup": setup_status(),
     }
 
 

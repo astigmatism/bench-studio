@@ -672,6 +672,18 @@
   flex-wrap: wrap;
   margin: 18px 0;
 }
+#app .bs-setup {
+  display: block;
+}
+#app .bs-setup-suite {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+}
 #app .bs-filter button {
   background: var(--bs-surface);
   border: 1px solid var(--bs-line);

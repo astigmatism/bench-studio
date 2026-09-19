@@ -90,10 +90,43 @@ def save_preparation(evidence):
         atomic_json(config.DATA / "session-preparation.json", evidence)
 
 
-def readiness(suite):
-    evidence = receipt()
+def qualification_state(state):
+    """Read live run state even while the setup coordinator yields to execution."""
+    from . import db
+
+    if not state.get("run_id"):
+        return state
+    run = db.get_run(state["run_id"])
+    if not run:
+        return dict(
+            state,
+            phase="missing_run",
+            detail="Qualification run is unavailable; setup needs attention.",
+        )
+    phase = run["status"]
+    detail = run.get("error") or run.get("progress")
+    if phase == "completed":
+        phase = "not_passed"
+        detail = (
+            "Smoke run finished without passing qualification. "
+            "Open the run for test evidence, then use Run again to retry."
+        )
+    progress = run.get("session_progress") or {}
+    return dict(
+        state,
+        phase=phase,
+        detail=detail,
+        turns=progress.get("turns"),
+        started_at=run.get("started_at"),
+        updated_at=run.get("updated_at"),
+    )
+
+
+def readiness(suite, *, evidence=None, setup=None):
+    evidence = receipt() if evidence is None else evidence
     setup_path = config.DATA / "session-setup.json"
-    setup = json.loads(setup_path.read_text()) if setup_path.exists() else {}
+    if setup is None:
+        setup = json.loads(setup_path.read_text()) if setup_path.exists() else {}
     prepared = (
         evidence.get("source_hash") == digest_tree(ROOT)
         and evidence.get("protocol_version") == PROTOCOL_VERSION
@@ -108,18 +141,19 @@ def readiness(suite):
         evidence.get("suites", {}).get(suite, {}).get("qualified_run")
     )
     reason = "Prepare and validate this suite with scripts/prepare-sessions.py, then qualify it with a runtime smoke run."
-    if setup_path.exists():
+    if setup:
         if setup.get("phase") in {"preparing", "failed", "interrupted"}:
             reason = setup["detail"]
         elif prepared and not ready:
-            state = setup.get("suites", {}).get(suite, {})
+            state = qualification_state(setup.get("suites", {}).get(suite, {}))
             reason = (
                 "Live qualification "
                 + state.get("phase", "pending").replace("_", " ")
                 + (" · run " + state["run_id"] if state.get("run_id") else "")
                 + ". "
-                + state.get(
-                    "detail", "This suite becomes available after its smoke run passes."
+                + (
+                    state.get("detail")
+                    or "This suite becomes available after its smoke run passes."
                 )
             )
     return {

@@ -279,9 +279,44 @@ function App() {
       </header>
       <main className="bs-main">
         {health.session_setup && health.session_setup.phase !== "ready" && (
-          <div role="status" className="bs-alert">
-            <strong>Benchmark suite setup: </strong>
-            {health.session_setup.detail}
+          <div
+            role="status"
+            aria-label="Benchmark suite setup"
+            className="bs-alert bs-setup"
+          >
+            <div>
+              <strong>Benchmark suite setup: </strong>
+              {health.session_setup.detail}
+            </div>
+            {Object.entries(health.session_setup.suites || {}).map(
+              ([suite, value]) => {
+                const state = value as Obj;
+                const name =
+                  profiles.find((p) => p.id === suite)?.name || suite;
+                return (
+                  <div key={suite} className="bs-setup-suite">
+                    <div>
+                      <strong>
+                        {name}: {label(state.phase.replaceAll("_", " "))}
+                      </strong>
+                      {state.detail && <span> · {state.detail}</span>}
+                      {typeof state.turns === "number" && (
+                        <span> · {state.turns} model turns</span>
+                      )}
+                    </div>
+                    {state.run_id && (
+                      <button
+                        className="bs-quiet"
+                        onClick={() => openRun(state.run_id)}
+                        aria-label={`View ${name} smoke run`}
+                      >
+                        View run
+                      </button>
+                    )}
+                  </div>
+                );
+              },
+            )}
           </div>
         )}
         {error && (

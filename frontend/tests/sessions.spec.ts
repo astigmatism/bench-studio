@@ -329,15 +329,33 @@ test("deployment setup remains visible and failed qualification can be retried",
     review_mode: "unattended",
   };
   await setup(page, run, {
-    phase: "qualifying",
-    detail:
-      "Offline preparation passed. Live suite qualification uses the normal idle queue.",
+    phase: "needs_attention",
+    detail: "Offline preparation passed. Some smoke runs need attention.",
+    suites: {
+      "coding-sessions": {
+        phase: "not_passed",
+        run_id: run.id,
+        detail:
+          "Smoke run finished without passing qualification. Open the run for test evidence, then use Run again to retry.",
+      },
+      "vision-checks": {
+        phase: "waiting_for_model",
+        detail:
+          "Waiting for an available daytime model with advertised vision support.",
+      },
+    },
   });
   await expect(page.getByRole("status")).toContainText(
     "Benchmark suite setup:",
   );
+  await expect(page.getByRole("status")).toContainText(
+    "Coding sessions: Not passed",
+  );
+  await expect(page.getByRole("status")).toContainText(
+    "Waiting for an available daytime model with advertised vision support.",
+  );
   await page
-    .getByRole("button", { name: "Coding sessions", exact: true })
+    .getByRole("button", { name: "View Coding sessions smoke run" })
     .click();
   await page.getByRole("button", { name: "Run again", exact: true }).click();
   await expect(page.getByLabel("Task selection")).toHaveValue("issues-small");
@@ -354,4 +372,59 @@ test("deployment setup remains visible and failed qualification can be retried",
     review_mode: "unattended",
     repetitions: 1,
   });
+});
+
+test("setup shows each suite's phase and opens the active smoke run", async ({
+  page,
+}) => {
+  const run: any = structuredClone(base);
+  run.status = "running";
+  run.reviews = [];
+  run.session_progress = {
+    phase: "implementation",
+    attempt_id: "issues-small-r1",
+  };
+  await setup(page, run, {
+    phase: "qualifying",
+    detail:
+      "Offline preparation passed. 1 of 3 new suites ready. Live smoke tests run one at a time. Existing benchmark profiles remain available.",
+    suites: {
+      "coding-sessions": {
+        phase: "running",
+        run_id: run.id,
+        detail: "issues-small-r1 · implementation",
+        turns: 12,
+      },
+      "vision-checks": { phase: "ready" },
+      "visual-design": {
+        phase: "queued",
+        detail: "Waiting for an idle machine",
+      },
+    },
+  });
+  const banner = page.getByRole("status", { name: "Benchmark suite setup" });
+  await expect(banner).toContainText("Coding sessions: Running");
+  await expect(banner).toContainText(
+    "issues-small-r1 · implementation · 12 model turns",
+  );
+  await expect(banner).toContainText("Vision checks: Ready");
+  await expect(banner).toContainText(
+    "Visual design: Queued · Waiting for an idle machine",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/setup-progress-mobile.png",
+    fullPage: true,
+  });
+  await page
+    .getByRole("button", { name: "View Coding sessions smoke run" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Run again", exact: true }),
+  ).toBeVisible();
 });

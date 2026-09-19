@@ -62,6 +62,8 @@ The `reports` service opts into Service Portal's **Update and restart** action. 
 
 The same button builds the new session environment. After the app restarts, the controller automatically validates its fixtures on that Docker host, then queues one unattended qualification per new suite using `SESSION_SMOKE_TARGET` (default `daytime`). Bench Studio displays setup progress; the new profiles remain gated until their qualification succeeds. Initial preparation can take several minutes, and live checks wait for the shared runtime to become idle. No additional shell command is needed for a successful rollout. Existing matching preparation and qualification receipts are reused on later restarts.
 
+The setup banner shows each suite's current run, phase, and any waiting or failure reason. Offline preparation uses CPU/Docker checks; live smoke runs alternate inference with project tools and verification, so GPU activity need not be continuous. Suites unlock individually after passing; existing profiles remain available throughout setup. A failed smoke run does not retry indefinitely: open its results, address the reported cause, and use **Run again** to retry qualification.
+
 Source changes belong in Git; push to `main`, then use the Portal button. No global prune, volume removal, or application `compose down` is used. [Recovery instructions](docs/recovery.md) cover restoring the previous image and database backup.
 
 ## Development

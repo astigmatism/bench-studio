@@ -74,6 +74,62 @@ def test_automatic_qualification_is_durable_sequential_and_not_replayed(setup_st
     assert len(db.runs()) == 3
     state = json.loads((config.DATA / "session-setup.json").read_text())
     assert all(s["phase"] == "failed" for s in state["suites"].values())
+    assert state["phase"] == "needs_attention"
+
+
+@pytest.mark.parametrize(
+    "run_status,phase,overall,detail",
+    [
+        ("running", "running", "qualifying", "issues-small-r1 · implementation"),
+        ("queued", "queued", "waiting", "Router has existing active/queued work"),
+        ("blocked", "blocked", "needs_attention", "Runtime configuration changed"),
+        ("failed", "failed", "needs_attention", "Request stream interrupted"),
+        ("completed", "not_passed", "needs_attention", "without passing qualification"),
+    ],
+)
+def test_health_and_profile_read_live_progress_without_setup_tick(
+    setup_state, run_status, phase, overall, detail
+):
+    SessionSetup().tick()
+    path = config.DATA / "session-setup.json"
+    original = path.read_bytes()
+    run = next(r for r in db.runs() if r["profile"] == "coding-sessions")
+    run.update(
+        status=run_status,
+        progress=detail,
+        session_progress={"phase": "implementation", "turns": 12},
+    )
+    db.update_run(run)
+    with TestClient(app) as client:
+        state = client.get("/api/health").json()["session_setup"]
+        profiles = client.get("/api/profiles").json()
+    assert state["phase"] == overall
+    suite = state["suites"]["coding-sessions"]
+    assert suite["phase"] == phase and suite["turns"] == 12
+    assert detail in suite["detail"]
+    readiness = next(p for p in profiles if p["id"] == "coding-sessions")["preparation"]
+    assert not readiness["ready"] and readiness["prepared"]
+    assert detail in readiness["reason"]
+    assert path.read_bytes() == original
+    assert len(db.runs()) == 3
+
+
+def test_qualified_suite_unlock_is_visible_while_other_suite_runs(setup_state):
+    SessionSetup().tick()
+    coding = next(r for r in db.runs() if r["profile"] == "coding-sessions")
+    coding.update(status="completed")
+    db.update_run(coding)
+    setup_state["suites"]["coding-sessions"]["qualified_run"] = coding["id"]
+    atomic_json(config.DATA / "session-preparation.json", setup_state)
+    visual = next(r for r in db.runs() if r["profile"] == "visual-design")
+    visual.update(status="running", progress="issues-small-r1 · verification")
+    db.update_run(visual)
+    with TestClient(app) as client:
+        state = client.get("/api/health").json()["session_setup"]
+    assert state["phase"] == "qualifying"
+    assert "1 of 3 new suites ready" in state["detail"]
+    assert state["suites"]["coding-sessions"]["phase"] == "ready"
+    assert state["suites"]["visual-design"]["phase"] == "running"
 
 
 def test_existing_qualified_receipt_skips_preparation_and_smoke(setup_state):
@@ -84,6 +140,20 @@ def test_existing_qualified_receipt_skips_preparation_and_smoke(setup_state):
     assert not db.runs()
     with TestClient(app) as client:
         assert client.get("/api/health").json()["session_setup"]["phase"] == "ready"
+
+
+def test_stale_preparation_does_not_report_ready_or_smoke_failure(setup_state):
+    for suite in setup_state["suites"].values():
+        suite["qualified_run"] = "prior-success"
+    atomic_json(config.DATA / "session-preparation.json", setup_state)
+    SessionSetup().tick()
+    setup_state["source_hash"] = "changed"
+    atomic_json(config.DATA / "session-preparation.json", setup_state)
+    with TestClient(app) as client:
+        state = client.get("/api/health").json()["session_setup"]
+    assert state["phase"] == "waiting_for_preparation"
+    assert not state["suites"]
+    assert not session_catalog.readiness("coding-sessions")["ready"]
 
 
 def test_discovery_outage_and_missing_vision_wait_without_enabling(
