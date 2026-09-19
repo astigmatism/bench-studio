@@ -136,7 +136,9 @@ async function setup(page: any, run: any = base, setupState: any = null) {
 }
 test("setup only starts on click and stop persists across browser reloads", async ({
   page,
-}) => {
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
   const mutations: string[] = [];
   page.on("request", (r) => {
     if (r.method() === "POST") mutations.push(new URL(r.url()).pathname);
@@ -151,6 +153,9 @@ test("setup only starts on click and stop persists across browser reloads", asyn
   await expect(
     page.getByRole("button", { name: "Start setup", exact: true }),
   ).toBeVisible();
+  expect(await page.evaluate(() => window.isSecureContext)).toBe(
+    testInfo.project.name !== "lan-http",
+  );
   await page.reload();
   await expect(
     page.getByRole("button", { name: "Start setup", exact: true }),
@@ -161,6 +166,9 @@ test("setup only starts on click and stop persists across browser reloads", asyn
   );
   await page.getByRole("button", { name: "Start setup", exact: true }).click();
   expect((await start).postDataJSON().idempotency_key).toBeTruthy();
+  await expect(
+    page.getByText("Setup request accepted.", { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Stop setup", exact: true }),
   ).toBeVisible();
@@ -180,6 +188,7 @@ test("setup only starts on click and stop persists across browser reloads", asyn
     "/api/session-setup/start",
     "/api/session-setup/stop",
   ]);
+  expect(errors).toEqual([]);
   await page.setViewportSize({ width: 390, height: 844 });
   expect(
     await page.evaluate(
@@ -190,6 +199,63 @@ test("setup only starts on click and stop persists across browser reloads", asyn
     path: "test-results/setup-manual-mobile.png",
     fullPage: true,
   });
+});
+
+test("setup shows pending feedback and server failures", async ({ page }) => {
+  await setup(page, base, {
+    phase: "paused",
+    detail: "Suite setup is idle.",
+    can_start: true,
+    can_stop: false,
+  });
+  let respond!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    respond = resolve;
+  });
+  await page.route("**/api/session-setup/start", async (route) => {
+    await pending;
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Application update in progress" }),
+    });
+  });
+  await page.getByRole("button", { name: "Start setup", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Starting setup…", exact: true }),
+  ).toBeDisabled();
+  respond();
+  await expect(page.getByRole("alert")).toContainText(
+    "Could not start suite setup: Error: Application update in progress",
+  );
+  await expect(
+    page.getByRole("button", { name: "Start setup", exact: true }),
+  ).toBeEnabled();
+});
+
+test("setup reports browser-side failures instead of silently ignoring the click", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(crypto, "getRandomValues", {
+      value: () => {
+        throw Error("Browser random source unavailable");
+      },
+    });
+  });
+  await setup(page, base, {
+    phase: "paused",
+    detail: "Suite setup is idle.",
+    can_start: true,
+    can_stop: false,
+  });
+  await page.getByRole("button", { name: "Start setup", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Browser random source unavailable",
+  );
+  await expect(
+    page.getByRole("button", { name: "Start setup", exact: true }),
+  ).toBeEnabled();
 });
 
 test("launch session tiers, selection and repetitions", async ({ page }) => {

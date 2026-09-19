@@ -166,8 +166,9 @@ function App() {
     [launchProfile, setLaunchProfile] = useState("coding"),
     [rerun, setRerun] = useState<Obj | null>(null),
     [connection, setConnection] = useState(true),
-    [setupBusy, setSetupBusy] = useState(false),
+    [setupBusy, setSetupBusy] = useState<"start" | "stop" | null>(null),
     [refresh, setRefresh] = useState(0);
+  const setupSubmission = useRef<string | null>(null);
   const load = useCallback(async () => {
     try {
       setRuns(await api("/runs"));
@@ -244,14 +245,48 @@ function App() {
   };
   const setupAction = async (action: "start" | "stop") => {
     if (setupBusy) return;
-    setSetupBusy(true);
+    setSetupBusy(action);
+    setError("");
+    setNotice("");
     try {
-      await mutate(
+      if (action === "start" && !setupSubmission.current)
+        setupSubmission.current = Array.from(
+          crypto.getRandomValues(new Uint8Array(16)),
+          (b) => b.toString(16).padStart(2, "0"),
+        ).join("");
+      const response = await api(
         `/session-setup/${action}`,
-        action === "start" ? { idempotency_key: crypto.randomUUID() } : {},
+        action === "start" ? { idempotency_key: setupSubmission.current } : {},
       );
+      setupSubmission.current = null;
+      const message =
+        action === "stop"
+          ? "Stop requested. Setup is cleaning up its work."
+          : response.active
+            ? "Setup request accepted. Waiting for the controller to begin preparation."
+            : "This setup request has already finished. Refreshing its status.";
+      setNotice(
+        action === "stop"
+          ? "Stop request accepted."
+          : response.active
+            ? "Setup request accepted."
+            : "This setup request has already finished.",
+      );
+      setHealth((previous) => ({
+        ...previous,
+        session_setup: {
+          ...previous.session_setup,
+          phase: action === "stop" ? "stopping" : "requested",
+          detail: message,
+          can_start: false,
+          can_stop: action === "start" && !!response.active,
+        },
+      }));
+      await load();
+    } catch (e) {
+      setError(`Could not ${action} suite setup: ${String(e)}`);
     } finally {
-      setSetupBusy(false);
+      setSetupBusy(null);
     }
   };
   const current = runs.find((r) => r.id === detail);
@@ -307,19 +342,19 @@ function App() {
                 {health.session_setup.can_start && (
                   <button
                     className="bs-button"
-                    disabled={setupBusy}
+                    disabled={!!setupBusy}
                     onClick={() => setupAction("start")}
                   >
-                    Start setup
+                    {setupBusy === "start" ? "Starting setup…" : "Start setup"}
                   </button>
                 )}
                 {health.session_setup.can_stop && (
                   <button
                     className="bs-button"
-                    disabled={setupBusy}
+                    disabled={!!setupBusy}
                     onClick={() => setupAction("stop")}
                   >
-                    Stop setup
+                    {setupBusy === "stop" ? "Stopping setup…" : "Stop setup"}
                   </button>
                 )}
               </div>
