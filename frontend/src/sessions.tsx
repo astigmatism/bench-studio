@@ -118,9 +118,6 @@ export function SessionOptions({
           ? " · human review pauses are excluded from active time"
           : ""}
       </p>
-      {profile.preparation && !profile.preparation.ready && (
-        <div className="bs-alert">{profile.preparation.reason}</div>
-      )}
     </section>
   );
 }

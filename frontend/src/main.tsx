@@ -763,6 +763,10 @@ function App() {
             models={models}
             initialProfile={launchProfile}
             rerun={rerun}
+            setup={health.session_setup || {}}
+            setupBusy={setupBusy}
+            startSetup={() => setupAction("start", false)}
+            stopSetup={() => setupAction("stop")}
             back={() => navigate("runs")}
             submitted={async (r) => {
               await load();
@@ -884,6 +888,10 @@ function Launcher({
   models,
   initialProfile,
   rerun,
+  setup,
+  setupBusy,
+  startSetup,
+  stopSetup,
   back,
   submitted,
   profileSaved,
@@ -893,6 +901,10 @@ function Launcher({
   models: Obj[];
   initialProfile: string;
   rerun: Obj | null;
+  setup: Obj;
+  setupBusy: "start" | "stop" | null;
+  startSetup: () => void;
+  stopSetup: () => void;
   back: () => void;
   submitted: (r: Obj) => void;
   profileSaved: (p: Obj) => void;
@@ -917,6 +929,10 @@ function Launcher({
   const p = profiles.find((x) => x.id === pid);
   const qualification =
     !!rerun?.profile_spec?.qualification && pid === rerun?.profile;
+  const needsSetup =
+    isSession(p) &&
+    p?.preparation?.ready === false &&
+    !(qualification && p?.preparation?.prepared);
   const [session, setSession] = useState<Obj>(
     sessionDefaults(
       rerun?.profile_spec || profiles.find((x) => x.id === initialProfile),
@@ -1183,6 +1199,36 @@ function Launcher({
           }}
         />
       )}
+      {needsSetup && (
+        <section
+          className="bs-surface bs-launch-setup"
+          aria-label="Profile setup"
+        >
+          <div className="bs-spread">
+            <h3>{setup.can_stop ? "Setup in progress" : "Setup required"}</h3>
+            {setup.can_stop ? (
+              <Button disabled={!!setupBusy} onClick={stopSetup}>
+                {setupBusy === "stop" ? "Stopping setup…" : "Stop setup"}
+              </Button>
+            ) : (
+              <Button
+                disabled={!!setupBusy || setup.can_start === false}
+                onClick={startSetup}
+              >
+                {setupBusy === "start" ? "Starting setup…" : "Start setup"}
+              </Button>
+            )}
+          </div>
+          <p className="bs-small" role="status">
+            {setup.can_stop || setup.can_start === false
+              ? setup.detail
+              : "Validate this suite’s projects and tests on the server. Setup does not use the model or start a benchmark. Your selections will stay here."}
+          </p>
+          {setup.last_error && (
+            <p className="bs-small">Last setup attempt: {setup.last_error}</p>
+          )}
+        </section>
+      )}
       <div className="bs-form-grid two">
         <label className="bs-field">
           Run note
@@ -1317,9 +1363,7 @@ function Launcher({
             !targets.length ||
             unsupported ||
             !p ||
-            (isSession(p) &&
-              p?.preparation?.ready === false &&
-              !(qualification && p?.preparation?.prepared)) ||
+            needsSetup ||
             (p?.requires_vision &&
               selected.some(
                 (m) =>

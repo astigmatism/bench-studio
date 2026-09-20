@@ -677,3 +677,157 @@ test("finished setup retains failure evidence after reload", async ({
     banner.getByRole("button", { name: "Stop setup", exact: true }),
   ).toHaveCount(0);
 });
+
+test("blocked launch can prepare offline in place and retain benchmark choices", async ({
+  page,
+}) => {
+  let ready = false;
+  let state: any = { phase: "paused", can_start: true, can_stop: false };
+  const mutations: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST") mutations.push(new URL(r.url()).pathname);
+  });
+  await page.clock.install();
+  await setup(page);
+  await page.route("**/api/profiles", (route) =>
+    route.fulfill({
+      json: profiles.map((p: any) =>
+        p.id === "coding-sessions"
+          ? {
+              ...p,
+              preparation: {
+                ready,
+                prepared: ready,
+                reason:
+                  "Select Start setup to validate the benchmark projects and tests.",
+              },
+            }
+          : p,
+      ),
+    }),
+  );
+  await page.route("**/api/health", (route) =>
+    route.fulfill({ json: { ok: true, session_setup: state } }),
+  );
+  await page.route("**/api/session-setup/start", (route) => {
+    expect(route.request().postDataJSON().run_smoke).toBe(false);
+    state = {
+      phase: "preparing",
+      can_start: false,
+      can_stop: true,
+      detail: "Preparing benchmark fixtures: 6 of 62 checks validated.",
+    };
+    return route.fulfill({ status: 202, json: { active: true } });
+  });
+  await page.reload();
+  await openSetup(page);
+  await page
+    .getByLabel("Also run model smoke tests (optional; uses the model)")
+    .check();
+  await page
+    .getByRole("button", { name: "New benchmark", exact: true })
+    .click();
+  await page
+    .getByLabel("Profile", { exact: true })
+    .selectOption("coding-sessions");
+  await page.getByLabel("Task difficulty").selectOption("large");
+  await page.getByLabel("Repetitions").selectOption("3");
+  await page.getByLabel("Review mode").selectOption("unattended");
+  await page.getByLabel("Run note").fill("Keep my benchmark settings");
+  const queue = page.getByRole("button", {
+    name: "Queue benchmark",
+    exact: true,
+  });
+  const panel = page.getByRole("region", { name: "Profile setup" });
+  await expect(queue).toBeDisabled();
+  await expect(panel).toContainText(
+    "Setup does not use the model or start a benchmark",
+  );
+  expect(mutations).toEqual([]);
+  await panel.getByRole("button", { name: "Start setup", exact: true }).click();
+  await expect(panel).toContainText("6 of 62 checks validated");
+  await expect(
+    panel.getByRole("button", { name: "Stop setup", exact: true }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/launch-setup-mobile.png",
+    fullPage: true,
+  });
+  ready = true;
+  state = { phase: "ready", can_start: true, can_stop: false };
+  await page.clock.fastForward(15001);
+  await expect(panel).toHaveCount(0);
+  await expect(queue).toBeEnabled();
+  await expect(page.getByLabel("Profile", { exact: true })).toHaveValue(
+    "coding-sessions",
+  );
+  await expect(page.getByLabel("Task difficulty")).toHaveValue("large");
+  await expect(page.getByLabel("Repetitions")).toHaveValue("3");
+  await expect(page.getByLabel("Review mode")).toHaveValue("unattended");
+  await expect(page.getByLabel("Run note")).toHaveValue(
+    "Keep my benchmark settings",
+  );
+  expect(mutations).toEqual(["/api/session-setup/start"]);
+});
+
+test("launch setup exposes failures and stop without leaving the form", async ({
+  page,
+}) => {
+  await setup(page, base, {
+    phase: "paused",
+    can_start: true,
+    can_stop: false,
+    last_error: "Offline checks failed",
+  });
+  await page.route("**/api/profiles", (route) =>
+    route.fulfill({
+      json: profiles.map((p: any) =>
+        p.id === "coding-sessions"
+          ? { ...p, preparation: { ready: false, prepared: false } }
+          : p,
+      ),
+    }),
+  );
+  await page.reload();
+  await page
+    .getByRole("button", { name: "New benchmark", exact: true })
+    .click();
+  await page
+    .getByLabel("Profile", { exact: true })
+    .selectOption("coding-sessions");
+  const panel = page.getByRole("region", { name: "Profile setup" });
+  await expect(panel).toContainText("Offline checks failed");
+  await page.route("**/api/session-setup/start", (route) =>
+    route.fulfill({
+      status: 409,
+      json: { detail: "Application update in progress" },
+    }),
+  );
+  await panel.getByRole("button", { name: "Start setup", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Application update in progress",
+  );
+  await expect(
+    panel.getByRole("button", { name: "Start setup", exact: true }),
+  ).toBeEnabled();
+  await page.unroute("**/api/session-setup/start");
+  await panel.getByRole("button", { name: "Start setup", exact: true }).click();
+  await panel.getByRole("button", { name: "Stop setup", exact: true }).click();
+  await expect(
+    panel.getByRole("button", { name: "Start setup", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Queue benchmark", exact: true }),
+  ).toBeDisabled();
+  await page.getByLabel("Profile", { exact: true }).selectOption("coding");
+  await expect(panel).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Queue benchmark", exact: true }),
+  ).toBeEnabled();
+});
