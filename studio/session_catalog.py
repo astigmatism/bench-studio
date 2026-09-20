@@ -10,8 +10,9 @@ from . import config
 
 FAMILIES = {"session", "vision"}
 TIERS = {"small": (1800, 100), "medium": (5400, 300), "large": (14400, 800)}
+OUTPUT_BUDGETS = {"small": 8192, "medium": 16384, "large": 32768}
 PROTOCOL_VERSION = 1
-EXECUTION_VERSION = 3
+EXECUTION_VERSION = 4
 ROOT = config.ROOT / "datasets" / "sessions"
 
 
@@ -291,7 +292,13 @@ def builtin_profiles():
                 difficulty="small",
                 difficulties=list(TIERS),
                 tier_budgets={
-                    k: {"task_timeout": v[0], "max_turns": v[1]}
+                    k: {
+                        "task_timeout": v[0],
+                        "max_turns": v[1],
+                        "max_tokens": max(
+                            OUTPUT_BUDGETS[k], row["parameters"]["max_tokens"]
+                        ),
+                    }
                     for k, v in TIERS.items()
                 },
             )
@@ -315,8 +322,7 @@ def configure(
         if difficulty not in TIERS:
             raise ValueError("Unknown task difficulty")
         if difficulty != profile.get("difficulty"):
-            seconds, turns = TIERS[difficulty]
-            profile["parameters"].update(task_timeout=seconds, max_turns=turns)
+            profile["parameters"].update(profile["tier_budgets"][difficulty])
         profile["difficulty"] = difficulty
     elif difficulty is not None:
         raise ValueError("Fixed vision checks do not have difficulty tiers")

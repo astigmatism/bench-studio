@@ -306,7 +306,22 @@ export function SessionDetail({
   const pending = finished
     ? []
     : (run.reviews || []).filter((r: Obj) => !r.decision);
-  const phase = run.session_progress;
+  const phase =
+    !run.session_progress?.target || run.session_progress.target === target
+      ? run.session_progress
+      : null;
+  const tasks: Obj[] = summary.tasks || [];
+  const lastAttempt = tasks.find((task) => task.id === phase?.attempt_id);
+  const verified = tasks.filter(
+    (task) => task.verification_attempts > 0,
+  ).length;
+  const failed = tasks.filter((task) => task.status === "failed");
+  const outputFailures = failed.filter(
+    (task) => task.failure_kind === "output_limit",
+  );
+  const usage = summary.usage || {};
+  const inputTokens = usage.prompt_tokens ?? usage.known_prompt_tokens;
+  const outputTokens = usage.completion_tokens ?? usage.known_completion_tokens;
   const vision = run.host?.vision?.[target];
   return (
     <div className="bs-session-detail">
@@ -317,6 +332,33 @@ export function SessionDetail({
           review={r}
         />
       ))}
+      {finished && (
+        <section className="bs-surface" aria-label="Attempt outcomes">
+          <h3>
+            {summary.passed ?? 0} / {summary.count ?? "—"} attempts passed
+          </h3>
+          <p className="bs-small">
+            {failed.length} failed attempts
+            {run.family === "session" &&
+              ` · ${verified} / ${tasks.length} reached verification`}
+          </p>
+          {outputFailures.length > 0 && (
+            <p>
+              {outputFailures.length} attempts stopped because a response
+              reached the {format(run.profile_spec?.parameters?.max_tokens)}
+              -token limit for thinking and the answer. See each attempt below
+              for its stopping point and saved responses.
+            </p>
+          )}
+          {summary.passed === 0 && run.family === "session" && (
+            <p className="bs-small">
+              Successful-attempt timings are unavailable because no attempt
+              passed. Total time and request evidence include the failed
+              attempts.
+            </p>
+          )}
+        </section>
+      )}
       {phase && (
         <section className="bs-surface">
           <h3>{finished ? "Session timeline" : "Session progress"}</h3>
@@ -336,8 +378,9 @@ export function SessionDetail({
             ))}
           </ol>
           <p>
-            {phase.attempt_id} · {title(finished ? run.status : phase.phase)} ·{" "}
-            {phase.turns ?? 0} model turns
+            {phase.attempt_id} ·{" "}
+            {title(finished ? lastAttempt?.status || run.status : phase.phase)}{" "}
+            · {phase.turns ?? 0} model turns
             {!finished && phase.generation?.active && (
               <span>
                 {" "}
@@ -421,7 +464,13 @@ export function SessionDetail({
               {format(m.value)} <small>{m.unit}</small>
             </div>
             <span className="bs-small">
-              {m.direction === "lower" ? "Lower is better" : "Higher is better"}
+              {m.value == null &&
+              summary.passed === 0 &&
+              ["implementation_seconds", "active_seconds"].includes(m.name)
+                ? "No successful attempts"
+                : m.direction === "lower"
+                  ? "Lower is better"
+                  : "Higher is better"}
             </span>
           </section>
         ))}
@@ -429,18 +478,48 @@ export function SessionDetail({
       <section className="bs-surface">
         <h3>Session evidence · {target}</h3>
         <p className="bs-small">
-          {summary.compaction_count ?? 0} compactions ·{" "}
-          {summary.usage?.requests ?? 0} requests ·{" "}
-          {format(summary.usage?.prompt_tokens)} input tokens ·{" "}
-          {format(summary.usage?.completion_tokens)} output tokens
+          {summary.compaction_count ?? 0} compactions · {usage.requests ?? 0}{" "}
+          requests ·{" "}
+          {usage.complete === false && inputTokens != null ? "at least " : ""}
+          {format(inputTokens)} input tokens ·{" "}
+          {usage.complete === false && outputTokens != null ? "at least " : ""}
+          {format(outputTokens)} output tokens
         </p>
-        {(summary.tasks || []).map((task: Obj) => (
+        {usage.complete === false && (
+          <p className="bs-small">
+            Token usage is incomplete
+            {usage.reported_requests != null
+              ? `: ${usage.reported_requests} of ${usage.requests} requests reported usage`
+              : ""}
+            . Available totals are lower bounds; missing usage is unknown.
+          </p>
+        )}
+        {summary.output_limit_requests > 0 && (
+          <p className="bs-small">
+            {summary.output_limit_requests} responses reached the output limit.
+            Their time and reported tokens are included.
+          </p>
+        )}
+        {tasks.map((task: Obj) => (
           <details key={task.id}>
             <summary>
               {task.id} · {task.status} · {format(task.active_seconds)}s active
+              {task.failure_kind && ` · ${title(task.failure_kind)}`}
             </summary>
             <p>{task.detail || "Evidence retained for this attempt."}</p>
             <p>{task.failure_kind && `Outcome: ${title(task.failure_kind)}`}</p>
+            {task.status === "failed" && (
+              <p>
+                Stopped during{" "}
+                {title(
+                  task.failure_phase ||
+                    task.requests?.at(-1)?.phase ||
+                    "unknown phase",
+                )}
+                {run.family === "session" &&
+                  ` · ${task.verification_attempts ?? 0} verification attempts`}
+              </p>
+            )}
             <dl className="bs-timing">
               {Object.entries(task.phase_seconds || {}).map(
                 ([phase, seconds]) => (
@@ -473,6 +552,53 @@ export function SessionDetail({
                   label="Full timing and request evidence"
                 />
               </p>
+            )}
+            {run.family === "session" && task.requests?.length > 0 && (
+              <details>
+                <summary>Model requests · {task.requests.length}</summary>
+                <div className="bs-table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Response</th>
+                        <th>Phase</th>
+                        <th>Outcome</th>
+                        <th>Seconds</th>
+                        <th>Input tokens</th>
+                        <th>Output tokens</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {task.requests.map((request: Obj, i: number) => (
+                        <tr key={i}>
+                          <td>
+                            {task.artifact_root ? (
+                              <Artifact
+                                run={run}
+                                path={`${task.artifact_root}/response-${String(i + 1).padStart(4, "0")}.json`}
+                                label={`Response ${i + 1}`}
+                              />
+                            ) : (
+                              i + 1
+                            )}
+                          </td>
+                          <td>{title(request.phase || "unknown")}</td>
+                          <td>
+                            {request.finish_reason === "length"
+                              ? "Output limit"
+                              : request.error ||
+                                request.finish_reason ||
+                                "Unknown"}
+                          </td>
+                          <td>{format(request.elapsed_seconds)}</td>
+                          <td>{format(request.usage?.prompt_tokens)}</td>
+                          <td>{format(request.usage?.completion_tokens)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
             )}
             {task.status === "passed" &&
               task.artifact_root &&

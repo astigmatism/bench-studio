@@ -57,7 +57,22 @@ def summarize_attempts(rows, profile, expected):
         }
     )
     requests = [q for r in rows for q in r.get("requests", [])]
-    usage_complete = bool(requests) and all(q.get("usage") for q in requests)
+    known_usage = [q["usage"] for q in requests if q.get("usage")]
+    usage_complete = (
+        bool(requests)
+        and len(known_usage) == len(requests)
+        and all(
+            u.get(key) is not None
+            for u in known_usage
+            for key in ("prompt_tokens", "completion_tokens")
+        )
+    )
+    known_tokens = {
+        key: sum(u[key] for u in known_usage if u.get(key) is not None)
+        if any(u.get(key) is not None for u in known_usage)
+        else None
+        for key in ("prompt_tokens", "completion_tokens")
+    }
     metrics.extend(
         [
             {
@@ -105,22 +120,21 @@ def summarize_attempts(rows, profile, expected):
             if (rr := [r for r in valid if r["task_id"] == task])
         ],
         "usage": {
-            "prompt_tokens": sum(
-                q.get("usage", {}).get("prompt_tokens", 0) for q in requests
-            )
-            if usage_complete
-            else None,
-            "completion_tokens": sum(
-                q.get("usage", {}).get("completion_tokens", 0) for q in requests
-            )
-            if usage_complete
-            else None,
+            **{
+                key: value if usage_complete else None
+                for key, value in known_tokens.items()
+            },
+            **{f"known_{key}": value for key, value in known_tokens.items()},
             "complete": usage_complete,
+            "reported_requests": len(known_usage),
             "ttft_ms_median": median(
                 [q["ttft_ms"] for q in requests if q.get("ttft_ms") is not None]
             ),
             "requests": len(requests),
         },
+        "output_limit_requests": sum(
+            q.get("finish_reason") == "length" for q in requests
+        ),
         "compaction_count": sum(len(r.get("compactions", [])) for r in rows),
         "infrastructure_error": next(
             (r.get("detail") for r in rows if r["status"] == "infrastructure_error"),

@@ -66,13 +66,22 @@ def test_tiers_and_custom_budgets(state):
     for tier, budget in session_catalog.TIERS.items():
         p = profiles.configure("coding-sessions", difficulty=tier)
         assert (p["parameters"]["task_timeout"], p["parameters"]["max_turns"]) == budget
+        assert p["parameters"]["max_tokens"] == session_catalog.OUTPUT_BUDGETS[tier]
         assert len(session_catalog.tasks(p)) == 2
     p = profiles.configure(
         "coding-sessions",
         difficulty="large",
-        overrides={"task_timeout": 28800, "max_turns": 1600},
+        overrides={"task_timeout": 28800, "max_turns": 1600, "max_tokens": 24576},
     )
     assert p["parameters"]["max_turns"] == 1600
+    assert p["parameters"]["max_tokens"] == 24576
+    assert profiles.configure("visual-design")["parameters"]["max_tokens"] == 16384
+    assert (
+        profiles.configure("visual-design", difficulty="large")["parameters"][
+            "max_tokens"
+        ]
+        == 32768
+    )
     for overrides in ({"task_timeout": 28801}, {"max_turns": 1601}):
         with pytest.raises(ValueError):
             profiles.configure("coding-sessions", overrides=overrides)
@@ -228,6 +237,17 @@ def test_failures_do_not_win_speed_comparison(state):
     assert summarize_attempts(rows[:1], p, 2)["score"] is None
 
 
+def test_partial_usage_exposes_known_totals_without_claiming_complete_usage(state):
+    core, *_ = core_fixture(state, [EmptyResponseError("No answer"), PLAN, FINISH])
+    row = asyncio.run(core.run())
+    usage = summarize_attempts([row], core.profile, 1)["usage"]
+    assert usage["requests"] == 3 and usage["reported_requests"] == 2
+    assert usage["complete"] is False
+    assert usage["prompt_tokens"] is None and usage["completion_tokens"] is None
+    assert usage["known_prompt_tokens"] == 40
+    assert usage["known_completion_tokens"] == 60
+
+
 def test_baseline_dimensions_and_legacy_slots(state):
     m = manifest(state)
     small = results.baseline_slot(m, "daytime")
@@ -293,6 +313,8 @@ def core_fixture(state, responses, *, interactive=False, request_override=None):
         value = responses.pop(0)
         if isinstance(value, Exception):
             raise value
+        if isinstance(value, dict) and "finish_reason" in value:
+            return value
         return {
             "content": json.dumps(value) if not isinstance(value, str) else value,
             "reasoning_content": "",
@@ -415,13 +437,67 @@ def test_empty_response_recovery_still_obeys_turn_budget(state):
     assert len(sent) == 2 and not env.actions
 
 
-def test_empty_output_at_length_limit_is_not_retried(state):
-    core, _, sent, _ = core_fixture(
-        state, [EmptyResponseError("No answer", {"finish_reason": "length"})]
+def test_empty_output_at_length_limit_recovers_within_same_budget(state):
+    core, env, sent, _ = core_fixture(
+        state,
+        [EmptyResponseError("No answer", {"finish_reason": "length"}), PLAN, FINISH],
     )
     row = asyncio.run(core.run())
-    assert row["failure_kind"] == "output_limit" and row["turns"] == 1
-    assert len(sent) == 1
+    assert row["status"] == "passed" and row["turns"] == 3
+    assert "8,192-token limit" in sent[1]["messages"][-1]["content"]
+    assert not env.actions
+    assert {p["max_tokens"] for p in sent} == {8192}
+
+
+def test_truncation_recovery_preserves_evidence_and_never_executes_partial_actions(
+    state,
+):
+    def truncated(action):
+        return {
+            "content": json.dumps(action),
+            "reasoning_content": "reasoning consumed the budget",
+            "finish_reason": "length",
+            "usage": {"prompt_tokens": 200, "completion_tokens": 8192},
+            "elapsed_seconds": 1,
+        }
+
+    write = {"action": "write", "path": "backend/app.py", "content": "complete feature"}
+    core, env, sent, decisions = core_fixture(
+        state,
+        [
+            truncated(PLAN),
+            PLAN,
+            truncated({"action": "exec", "command": "must not run"}),
+            write,
+            FINISH,
+        ],
+        interactive=True,
+    )
+    row = asyncio.run(core.run())
+    assert row["status"] == "passed" and row["verification_attempts"] == 1
+    assert env.actions == [(write, False)] and len(decisions) == 1
+    assert row["turns"] == 5 and row["active_seconds"] == 8
+    assert row["failure_phase"] is None
+    assert len(sent[0]["messages"]) + 1 == len(sent[1]["messages"])
+    assert "smaller actions" in sent[3]["messages"][-1]["content"]
+    assert {p["max_tokens"] for p in sent} == {8192}
+    assert json.loads((core.root / "response-0003.json").read_text())[
+        "content"
+    ] == json.dumps({"action": "exec", "command": "must not run"})
+    summary = summarize_attempts([row], core.profile, 1)
+    assert summary["score"] == 100 and summary["output_limit_requests"] == 2
+    assert summary["usage"]["completion_tokens"] == 2 * 8192 + 3 * 30
+
+
+@pytest.mark.parametrize("budget", ["turns", "time"])
+def test_truncation_recovery_obeys_task_budget(state, budget):
+    core, env, sent, _ = core_fixture(
+        state, [EmptyResponseError("No answer", {"finish_reason": "length"}), PLAN]
+    )
+    core.params["max_turns" if budget == "turns" else "task_timeout"] = 1
+    row = asyncio.run(core.run())
+    assert row["failure_kind"] == "agent_budget" and row["turns"] == 1
+    assert len(sent) == 1 and not env.actions
 
 
 def test_cancellation_during_generation_is_not_retried(state):
@@ -548,7 +624,10 @@ def test_turn_and_output_limits_are_model_outcomes(state):
         }
 
     core, *_ = core_fixture(state, [], request_override=length)
-    assert asyncio.run(core.run())["failure_kind"] == "output_limit"
+    row = asyncio.run(core.run())
+    assert row["failure_kind"] == "output_limit" and row["turns"] == 3
+    assert row["failure_phase"] == "planning"
+    assert "three generation attempts" in row["detail"]
 
 
 def test_database_migration_preserves_old_baselines(state):
@@ -925,8 +1004,8 @@ def test_native_tool_parser_rejects_ambiguous_or_incomplete_calls(value):
 def test_session_execution_change_breaks_comparability(state):
     current = manifest(state)
     previous = copy.deepcopy(current)
-    previous["profile_spec"]["execution_adapter_version"] = 1
-    assert current["profile_spec"]["execution_adapter_version"] == 3
+    previous["profile_spec"]["execution_adapter_version"] = 3
+    assert current["profile_spec"]["execution_adapter_version"] == 4
     assert not results.comparable(previous, current)
 
 

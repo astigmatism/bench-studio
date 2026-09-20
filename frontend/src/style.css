@@ -987,8 +987,12 @@ body {
 }
 #app .bs-session-detail {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   margin: 24px 0;
+}
+#app .bs-session-detail > * {
+  min-width: 0;
 }
 #app .bs-review {
   border: 2px solid var(--bs-accent);

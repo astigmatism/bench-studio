@@ -362,6 +362,7 @@ test("launch session tiers, selection and repetitions", async ({ page }) => {
     mode: "sequential",
   });
   expect(payload.overrides.task_timeout).toBe(14400);
+  expect(payload.overrides.max_tokens).toBe(32768);
 });
 test("approve plan without replaying after a double click", async ({
   page,
@@ -505,7 +506,9 @@ test("completed sessions show success and consumed time together", async ({
     page.getByText("Active time · all attempts", { exact: true }),
   ).toBeVisible();
   await page
-    .getByText("inventory-small-r1 · failed · 1,800s active", { exact: true })
+    .getByText("inventory-small-r1 · failed · 1,800s active · agent budget", {
+      exact: true,
+    })
     .click();
   await expect(
     page.getByText("Outcome: agent budget", { exact: true }),
@@ -522,6 +525,171 @@ test("completed sessions show success and consumed time together", async ({
   ).toBe(true);
   await page.screenshot({
     path: "test-results/session-results-mobile.png",
+    fullPage: true,
+  });
+});
+
+test("failed sessions show stopping points, partial usage and saved responses", async ({
+  page,
+}) => {
+  const run: any = structuredClone(base);
+  run.status = "completed";
+  run.reviews = [];
+  run.session_progress = {
+    target: "daytime",
+    attempt_id: "inventory-large-r1",
+    phase: "planning",
+    turns: 1,
+  };
+  const limited = {
+    finish_reason: "length",
+    elapsed_seconds: 285,
+    usage: { prompt_tokens: 20, completion_tokens: 8192 },
+  };
+  run.summary.daytime = {
+    count: 2,
+    passed: 0,
+    score: 0,
+    unit: "%",
+    output_limit_requests: 2,
+    usage: {
+      requests: 4,
+      reported_requests: 3,
+      complete: false,
+      prompt_tokens: null,
+      completion_tokens: null,
+      known_prompt_tokens: 60,
+      known_completion_tokens: 16414,
+    },
+    session_metrics: [
+      {
+        name: "implementation_seconds",
+        label: "Median implementation time · successful attempts",
+        value: null,
+        unit: "s",
+        direction: "lower",
+      },
+      {
+        name: "consumed_seconds",
+        label: "Active time · all attempts",
+        value: 800,
+        unit: "s",
+        direction: "lower",
+      },
+    ],
+    tasks: [
+      {
+        id: "issues-large-r1",
+        status: "failed",
+        failure_kind: "output_limit",
+        detail: "Per-request output budget exhausted",
+        active_seconds: 500,
+        verification_attempts: 0,
+        artifact_root: "daytime/issues-large-r1",
+        requests: [
+          {
+            phase: "planning",
+            finish_reason: "stop",
+            elapsed_seconds: 5,
+            usage: { prompt_tokens: 20, completion_tokens: 30 },
+          },
+          {
+            phase: "planning",
+            error: "No visible answer",
+            elapsed_seconds: 2,
+            usage: null,
+          },
+          { ...limited, phase: "implementation" },
+        ],
+      },
+      {
+        id: "inventory-large-r1",
+        status: "failed",
+        failure_kind: "output_limit",
+        detail: "Per-request output budget exhausted",
+        active_seconds: 300,
+        verification_attempts: 0,
+        artifact_root: "daytime/inventory-large-r1",
+        requests: [{ ...limited, phase: "planning" }],
+      },
+    ],
+  };
+  await setup(page, run);
+  await expect(
+    page.getByText("Finished · 0 / 2 passed", { exact: true }),
+  ).toHaveClass(/warn/);
+  await page
+    .getByRole("button", { name: "Coding sessions", exact: true })
+    .click();
+  await expect(
+    page.getByText("Finished · 0 / 2 passed", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "0 / 2 attempts passed" }),
+  ).toBeVisible();
+  await expect(page.getByText(/0 \/ 2 reached verification/)).toBeVisible();
+  await expect(
+    page.getByText(
+      /2 attempts stopped because a response reached the 8,192-token limit/,
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText("No successful attempts", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/inventory-large-r1 · failed · 1 model turns/),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/at least 60 input tokens · at least 16,414 output tokens/),
+  ).toBeVisible();
+  await expect(page.getByText(/3 of 4 requests reported usage/)).toBeVisible();
+  await page
+    .locator("summary")
+    .filter({ hasText: "issues-large-r1 · failed" })
+    .click();
+  await expect(
+    page.getByText("Stopped during implementation · 0 verification attempts", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .locator("summary")
+    .filter({ hasText: "Model requests · 3" })
+    .click();
+  await expect(
+    page.getByRole("cell", { name: "Output limit", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "No visible answer", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Response 3" })).toHaveAttribute(
+    "href",
+    "/api/runs/session-ui/artifacts/daytime/issues-large-r1/response-0003.json",
+  );
+  await expect(page.getByRole("link", { name: "Verified patch" })).toHaveCount(
+    0,
+  );
+  await page.screenshot({
+    path: "test-results/session-failures-desktop.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const outcomes = await page
+    .getByRole("region", { name: "Attempt outcomes" })
+    .boundingBox();
+  expect(outcomes!.x + outcomes!.width).toBeLessThanOrEqual(390);
+  const evidence = await page
+    .locator(".bs-session-detail > section")
+    .last()
+    .boundingBox();
+  expect(evidence!.x + evidence!.width).toBeLessThanOrEqual(390);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/session-failures-mobile.png",
     fullPage: true,
   });
 });

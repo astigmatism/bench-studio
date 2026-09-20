@@ -269,7 +269,7 @@ test("coding launch explains shared output allowance", async ({ page }) => {
     .click();
   await page.getByText("Advanced parameters · profile defaults").click();
   await expect(
-    page.getByLabel("Total output tokens (thinking + answer)"),
+    page.getByLabel("Output tokens per response (thinking + answer)"),
   ).toHaveValue("8192");
   await expect(
     page.getByText(/The total output limit includes thinking/),

@@ -498,15 +498,18 @@
     "tier_budgets": {
       "small": {
         "task_timeout": 1800,
-        "max_turns": 100
+        "max_turns": 100,
+        "max_tokens": 8192
       },
       "medium": {
         "task_timeout": 5400,
-        "max_turns": 300
+        "max_turns": 300,
+        "max_tokens": 16384
       },
       "large": {
         "task_timeout": 14400,
-        "max_turns": 800
+        "max_turns": 800,
+        "max_tokens": 32768
       }
     },
     "fingerprint": "35b91aaec6df0436e5a0618385503f867155c2d6a4f10cb6c50ad4cdb80679f1"
@@ -687,7 +690,7 @@
       "top_p": 1,
       "seed": 42,
       "reasoning_effort": "default",
-      "max_tokens": 8192,
+      "max_tokens": 16384,
       "reasoning_budget_tokens": null,
       "task_timeout": 1800,
       "max_turns": 100
@@ -802,15 +805,18 @@
     "tier_budgets": {
       "small": {
         "task_timeout": 1800,
-        "max_turns": 100
+        "max_turns": 100,
+        "max_tokens": 16384
       },
       "medium": {
         "task_timeout": 5400,
-        "max_turns": 300
+        "max_turns": 300,
+        "max_tokens": 16384
       },
       "large": {
         "task_timeout": 14400,
-        "max_turns": 800
+        "max_turns": 800,
+        "max_tokens": 32768
       }
     },
     "fingerprint": "40e347ef9366e0410f4545b1a275b566a66726d7a6b2537b83cd2563c9c0f0fe"

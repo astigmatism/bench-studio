@@ -122,6 +122,24 @@ function Pill({ status }: { status: string }) {
     </span>
   );
 }
+function RunStatus({ run }: { run: Obj }) {
+  const summaries: Obj[] = Object.values(run.summary || {});
+  if (
+    isSession(run) &&
+    run.status === "completed" &&
+    summaries.length > 0 &&
+    summaries.every((s) => s.passed != null && s.count != null && !s.partial)
+  ) {
+    const passed = summaries.reduce((n, s) => n + s.passed, 0);
+    const count = summaries.reduce((n, s) => n + s.count, 0);
+    return (
+      <span className={`bs-pill ${passed === count ? "good" : "warn"}`}>
+        Finished · {passed} / {count} passed
+      </span>
+    );
+  }
+  return <Pill status={run.status} />;
+}
 function Button({
   children,
   onClick,
@@ -578,7 +596,7 @@ function App() {
                         ))}
                       </td>
                       <td>
-                        <Pill status={r.status} />
+                        <RunStatus run={r} />
                         {r.load_warning && (
                           <div className="bs-small">Shared activity</div>
                         )}
@@ -1276,7 +1294,7 @@ function Launcher({
             .map((k) => (
               <label className="bs-field" key={k}>
                 {k === "max_tokens"
-                  ? "Total output tokens (thinking + answer)"
+                  ? "Output tokens per response (thinking + answer)"
                   : k === "reasoning_budget_tokens"
                     ? "Thinking token limit (optional)"
                     : label(k.replaceAll("_", " "))}
@@ -1425,7 +1443,7 @@ function RunDetail({
       <div className="bs-heading">
         <div className="bs-inline">
           <h1>{runName(r)}</h1>
-          <Pill status={r.status} />
+          <RunStatus run={r} />
         </div>
         <div className="bs-inline">
           {!terminal.has(r.status) && (
