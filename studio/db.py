@@ -37,7 +37,7 @@ def transaction():
 def initialize():
     with transaction() as c:
         version = c.execute("PRAGMA user_version").fetchone()[0]
-        if version > 2:
+        if version > 3:
             raise RuntimeError(
                 "Database is newer than this application; refusing downgrade"
             )
@@ -48,13 +48,14 @@ def initialize():
         CREATE TABLE IF NOT EXISTS baselines(slot TEXT PRIMARY KEY, run_id TEXT NOT NULL, target TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, created_at TEXT NOT NULL, document TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY, document TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS deleted_runs(id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE);
         CREATE INDEX IF NOT EXISTS runs_status ON runs(status,created_at);
         CREATE TABLE IF NOT EXISTS session_reviews(
             run_id TEXT NOT NULL, target TEXT NOT NULL, attempt_id TEXT NOT NULL,
             revision INTEGER NOT NULL, document TEXT NOT NULL,
             decision_key TEXT, PRIMARY KEY(run_id,target,attempt_id,revision),
             UNIQUE(run_id,decision_key));
-        PRAGMA user_version=2;
+        PRAGMA user_version=3;
         """)
 
 
@@ -74,6 +75,10 @@ def event(c, rid, value):
 
 
 def put_run(c, m, key=None):
+    if c.execute(
+        "SELECT 1 FROM deleted_runs WHERE id=? OR idempotency_key=?", (m["id"], key)
+    ).fetchone():
+        raise ValueError("This run was deleted. Start a new benchmark.")
     c.execute(
         "INSERT INTO runs VALUES(?,?,?,?,?)",
         (m["id"], m["created_at"], m["status"], pack(m), key),

@@ -124,7 +124,9 @@ test("profiles, keyboard operation, history, artifacts, comparison", async ({
     page.getByRole("heading", { name: "Repository tasks", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Runs", exact: true }).click();
-  await page.getByRole("button", { name: "Coding throughput", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Coding throughput", exact: true })
+    .click();
   await page
     .getByRole("button", { name: "Reports & exports", exact: true })
     .click();
@@ -278,4 +280,271 @@ test("coding launch explains shared output allowance", async ({ page }) => {
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   ).toBe(true);
+});
+
+test("select all, compare two, cancel and delete chosen history with active runs preserved", async ({
+  page,
+}) => {
+  let runs = [
+    { ...completed, id: "active-run", status: "running", progress: "Working" },
+    { ...completed, id: "run-a" },
+    { ...completed, id: "run-b", status: "failed" },
+    { ...completed, id: "run-c", status: "cancelled" },
+  ];
+  const deleted: string[][] = [];
+  await page.route("**/api/runs", (route) => route.fulfill({ json: runs }));
+  await page.route("**/api/runs/delete", (route) => {
+    const { ids } = route.request().postDataJSON();
+    deleted.push(ids);
+    runs = runs.filter((r) => !ids.includes(r.id));
+    return route.fulfill({ json: { deleted: ids, cleanup_failed: [] } });
+  });
+  await page.reload();
+  const all = page.getByLabel("Select all runs", { exact: true });
+  await expect(
+    page.getByLabel("Select active-run", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Delete selected", exact: true }),
+  ).toBeDisabled();
+  await page.getByLabel("Select run-a", { exact: true }).check();
+  await expect(all).toBeChecked({ indeterminate: true });
+  await page.getByLabel("Select run-b", { exact: true }).check();
+  await expect(
+    page.getByRole("button", { name: "Compare selected" }),
+  ).toBeEnabled();
+  await all.check();
+  await expect(
+    page.getByRole("button", { name: "Compare selected" }),
+  ).toBeDisabled();
+  await expect(page.getByText("3 selected", { exact: true })).toBeVisible();
+  await all.uncheck();
+  await expect(page.getByText("0 selected", { exact: true })).toBeVisible();
+  await all.focus();
+  await page.keyboard.press("Space");
+  await page
+    .getByRole("button", { name: "Delete selected", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Delete 3 runs?" });
+  await expect(dialog).toContainText("This cannot be undone.");
+  await expect(
+    dialog.getByRole("button", { name: "Cancel", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  expect(deleted).toEqual([]);
+  await page.getByLabel("Select run-c", { exact: true }).uncheck();
+  await page
+    .getByRole("button", { name: "Delete selected", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Delete 2 runs", exact: true })
+    .click();
+  await expect(
+    page.getByText("Deleted 2 runs.", { exact: true }),
+  ).toBeVisible();
+  expect(deleted).toEqual([["run-a", "run-b"]]);
+  await expect(page.getByLabel("Select run-a", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByLabel("Select run-c", { exact: true }),
+  ).not.toBeChecked();
+  await expect(page.getByText("Working", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("Select run-a", { exact: true })).toHaveCount(0);
+  await all.check();
+  await page
+    .getByRole("button", { name: "Delete selected", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Delete 1 run", exact: true })
+    .click();
+  await expect(
+    page.getByText("No finished runs yet. Your results will appear here."),
+  ).toBeVisible();
+  await expect(all).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "View run", exact: true }),
+  ).toBeVisible();
+});
+
+test("deletion errors preserve selection and pending deletion cannot be submitted twice", async ({
+  page,
+}) => {
+  let calls = 0;
+  let respond!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    respond = resolve;
+  });
+  await page.route("**/api/runs/delete", async (route) => {
+    calls++;
+    await pending;
+    return route.fulfill({
+      status: 409,
+      json: { detail: "Application update in progress" },
+    });
+  });
+  await page.getByLabel("Select all runs", { exact: true }).check();
+  await page
+    .getByRole("button", { name: "Delete selected", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Delete 1 run", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Deleting…", exact: true }),
+  ).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toBeVisible();
+  respond();
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+    "Application update in progress",
+  );
+  expect(calls).toBe(1);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(
+    page.getByLabel("Select completed-001", { exact: true }),
+  ).toBeChecked();
+});
+
+test("suite setup stays out of the workspace and expands only within Profiles", async ({
+  page,
+}) => {
+  await page.route("**/api/health", (route) =>
+    route.fulfill({
+      json: {
+        ok: true,
+        session_setup: {
+          phase: "ready",
+          detail: "Fixtures validated. All benchmark suites are available.",
+          can_start: true,
+          can_stop: false,
+          suites: {},
+        },
+      },
+    }),
+  );
+  await page.reload();
+  await expect(
+    page.getByRole("status", { name: "Benchmark suite setup" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Profiles", exact: true }).click();
+  const setup = page.getByRole("status", { name: "Benchmark suite setup" });
+  await expect(setup).not.toBeVisible();
+  await page.locator("summary").filter({ hasText: "Suite setup" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(setup).toBeVisible();
+  await expect(
+    setup.getByRole("button", { name: "Run optional model checks" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Runs", exact: true }).click();
+  await expect(setup).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Coding throughput", exact: true })
+    .click();
+  await expect(setup).toHaveCount(0);
+  await page.getByRole("button", { name: "Compare", exact: true }).click();
+  await expect(setup).toHaveCount(0);
+  await page.getByRole("button", { name: "Profiles", exact: true }).click();
+  await expect(setup).not.toBeVisible();
+});
+
+test("history bulk actions and confirmation fit narrow and dark layouts", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.getByLabel("Select all runs", { exact: true }).check();
+  const deleteButton = page.getByRole("button", {
+    name: "Delete selected",
+    exact: true,
+  });
+  await expect(deleteButton).toBeInViewport();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/history-mobile-dark.png",
+    fullPage: true,
+  });
+  await deleteButton.click();
+  await expect(page.getByRole("dialog")).toBeInViewport();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/delete-mobile-dark.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.screenshot({
+    path: "test-results/history-desktop.png",
+    fullPage: true,
+  });
+});
+
+test("a history refresh started before deletion cannot restore deleted rows", async ({
+  page,
+}) => {
+  let runs = [completed];
+  let reads = 0;
+  let holdNext = false;
+  let held = false;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/runs", async (route) => {
+    const snapshot = [...runs];
+    reads++;
+    if (holdNext) {
+      holdNext = false;
+      held = true;
+      await pending;
+    }
+    return route.fulfill({ json: snapshot });
+  });
+  await page.route("**/api/runs/delete", (route) => {
+    const { ids } = route.request().postDataJSON();
+    runs = [];
+    return route.fulfill({ json: { deleted: ids, cleanup_failed: [] } });
+  });
+  await page.clock.install();
+  await page.reload();
+  await page.getByLabel("Select all runs", { exact: true }).check();
+  holdNext = true;
+  await page.clock.fastForward(15001);
+  await expect.poll(() => held).toBe(true);
+  const beforeDelete = reads;
+  await page
+    .getByRole("button", { name: "Delete selected", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Delete 1 run", exact: true })
+    .click();
+  await expect(
+    page.getByText("No finished runs yet. Your results will appear here."),
+  ).toBeVisible();
+  await expect.poll(() => reads).toBeGreaterThan(beforeDelete);
+  const staleResponse = page.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/api/runs",
+  );
+  release();
+  await (await staleResponse).finished();
+  await page.clock.runFor(100);
+  await expect(
+    page.getByLabel("Select completed-001", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByLabel("Select all runs", { exact: true }),
+  ).toBeDisabled();
 });

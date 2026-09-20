@@ -124,3 +124,15 @@ Execution adapter 3 records empty-response evidence and allows two bounded corre
 - Deployable app and runner Docker images built successfully and passed offline, read-only import/default-setup checks; the app includes the built frontend. The updater's shell check passed. No deployment was performed. After validation the production checkout remained clean at `caf8587`, no benchmark or setup request was active or queued, temporary API/controller processes and verifier containers were gone, and the production execution lock was free. The temporary browser tab and SSH tunnel were closed. Diagnostic evidence is also retained locally under `data/production-agent-v3/`.
 
 The production app and model configuration were not deployed or modified by this validation. Temporary code ran in a separate API/controller instance and diagnostic paths. These diagnostic runs are not published performance baselines, and automated visual acceptance is not human approval.
+
+## History deletion and quieter suite setup — 2026-09-20 UTC
+
+Run history now supports selecting individual finished runs or all finished runs, with a confirmation dialog for bulk deletion. The API validates the whole selection before removing database records, baseline references, reviews, events, reports, logs, and cached exports. Queued, active, blocked, and review-waiting runs must be stopped first. Schema v3 adds deletion tombstones so retained legacy manifests cannot reappear after a cleanup failure or restart, and replaying a deleted launch request cannot queue another benchmark. File cleanup failures are reported and deletion retries are safe.
+
+The global suite-availability banner is removed. Setup controls and per-suite evidence are available in a collapsed **Profiles → Suite setup** panel. Setup still starts only on explicit request. Finished history no longer duplicates unfinished jobs displayed above it.
+
+Validation:
+- Python suite: **311 passed, 3 skipped**. Coverage includes all finished statuses, atomic rejection of unfinished/missing runs, baseline and review cleanup, legacy restart behavior, cleanup-failure retries, symlink safety, maintenance and origin checks.
+- Browser suite: **48 passed** across localhost and plain HTTP (46 full-suite cases plus 2 added refresh-race cases). Coverage includes bulk selection, partial selection, cancellation, confirmation, pending/error handling, empty history, stale refreshes, keyboard controls, mobile/dark layouts, and setup navigation/start/stop/reload behavior.
+- TypeScript/Vite production build and updater shell syntax passed. The existing large-bundle advisory remains. Ruff found no new issues in changed Python files; eight existing findings are unchanged.
+- Read-only production inspection confirmed 40 runs, including one awaiting review. The production UI and updated bundle were visually inspected through local read-only previews using that history snapshot. Select all in the new UI selected the 39 finished runs. No production deletion, setup request, benchmark launch, deployment, or service change was performed. Temporary previews were stopped afterward.

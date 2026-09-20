@@ -133,7 +133,13 @@ async function setup(page: any, run: any = base, setupState: any = null) {
     });
   });
   await page.goto("/");
+  if (setupState) await openSetup(page);
 }
+async function openSetup(page: any) {
+  await page.getByRole("button", { name: "Profiles", exact: true }).click();
+  await page.locator("summary").filter({ hasText: "Suite setup" }).click();
+}
+
 test("setup only starts on click and stop persists across browser reloads", async ({
   page,
 }, testInfo) => {
@@ -157,6 +163,7 @@ test("setup only starts on click and stop persists across browser reloads", asyn
     testInfo.project.name !== "lan-http",
   );
   await page.reload();
+  await openSetup(page);
   await expect(
     page.getByRole("button", { name: "Start setup", exact: true }),
   ).toBeVisible();
@@ -175,6 +182,7 @@ test("setup only starts on click and stop persists across browser reloads", asyn
     page.getByRole("button", { name: "Stop setup", exact: true }),
   ).toBeVisible();
   await page.reload();
+  await openSetup(page);
   await expect(
     page.getByRole("button", { name: "Stop setup", exact: true }),
   ).toBeVisible();
@@ -183,6 +191,7 @@ test("setup only starts on click and stop persists across browser reloads", asyn
     page.getByRole("button", { name: "Start setup", exact: true }),
   ).toBeVisible();
   await page.reload();
+  await openSetup(page);
   await expect(
     page.getByRole("button", { name: "Start setup", exact: true }),
   ).toBeVisible();
@@ -240,6 +249,7 @@ test("failed model smoke leaves prepared profiles launchable after reload", asyn
     },
   });
   await page.reload();
+  await openSetup(page);
   const banner = page.getByRole("status", { name: "Benchmark suite setup" });
   await expect(banner).toContainText("Coding sessions: Available");
   await expect(banner).toContainText("Model smoke test: Failed");
@@ -357,9 +367,7 @@ test("approve plan without replaying after a double click", async ({
   page,
 }) => {
   await setup(page);
-  await page
-    .getByRole("button", { name: "Coding sessions", exact: true })
-    .click();
+  await page.getByRole("button", { name: "View run", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Review the plan" }),
   ).toBeVisible();
@@ -386,9 +394,7 @@ test("request revision with feedback and show a sandboxed prototype", async ({
     artifact: "daytime/issues-small-r1/verification-1/prototype.html",
   };
   await setup(page, run);
-  await page
-    .getByRole("button", { name: "Coding sessions", exact: true })
-    .click();
+  await page.getByRole("button", { name: "View run", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Request revision", exact: true }),
   ).toBeDisabled();
@@ -520,7 +526,7 @@ test("completed sessions show success and consumed time together", async ({
   });
 });
 
-test("deployment setup remains visible and failed qualification can be retried", async ({
+test("profile setup preserves details and failed qualification can be retried", async ({
   page,
 }) => {
   const run: any = structuredClone(base);
@@ -549,9 +555,6 @@ test("deployment setup remains visible and failed qualification can be retried",
       },
     },
   });
-  await expect(page.getByRole("status")).toContainText(
-    "Benchmark suite setup:",
-  );
   await expect(page.getByRole("status")).toContainText(
     "Coding sessions: Not passed",
   );
@@ -660,6 +663,7 @@ test("finished setup retains failure evidence after reload", async ({
     },
   });
   await page.reload();
+  await openSetup(page);
   const banner = page.getByRole("status", { name: "Benchmark suite setup" });
   await expect(banner).toContainText("Setup has stopped");
   await expect(banner).toContainText(

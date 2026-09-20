@@ -673,12 +673,39 @@
   margin: 18px 0;
 }
 #app .bs-setup {
-  display: block;
+  margin: 0 0 20px;
 }
-#app .bs-setup-ready {
-  background: var(--bs-surface);
-  color: var(--bs-muted);
+#app .bs-setup summary .bs-small {
+  float: right;
+  margin-left: 16px;
+}
+#app .bs-setup-content {
+  border-top: 1px solid var(--bs-line);
+  margin-top: 14px;
+  padding-top: 14px;
+}
+#app .bs-danger {
+  color: var(--bs-red);
+}
+#app .bs-delete-dialog {
+  width: min(460px, calc(100% - 32px));
+  padding: 24px;
   border: 1px solid var(--bs-line);
+  border-radius: 14px;
+  color: var(--bs-ink);
+  background: var(--bs-surface);
+  box-shadow: 0 20px 80px #0003;
+}
+#app .bs-delete-dialog::backdrop {
+  background: #0006;
+}
+#app .bs-delete-dialog p {
+  color: var(--bs-muted);
+  margin: 14px 0 24px;
+  line-height: 1.6;
+}
+#app .bs-delete-dialog .bs-inline {
+  justify-content: flex-end;
 }
 #app .bs-setup-suite {
   display: flex;
@@ -892,6 +919,7 @@ body {
 #app .bs-note svg {
   flex-shrink: 0;
 }
+#app summary:focus-visible,
 #app input:focus-visible,
 #app select:focus-visible,
 #app button:focus-visible,

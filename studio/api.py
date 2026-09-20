@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import shutil
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -97,6 +98,11 @@ class Baseline(BaseModel):
     target: str
 
 
+class DeleteRuns(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[str] = Field(min_length=1)
+
+
 def require_run(rid):
     m = db.get_run(rid)
     if not m:
@@ -178,6 +184,61 @@ def get_run(rid: str):
     return results.enrich(require_run(rid))
 
 
+@app.post("/api/runs/delete")
+def delete_runs(body: DeleteRuns):
+    ids = list(dict.fromkeys(body.ids))
+    if any(not rid or rid in {".", ".."} or "/" in rid or "\\" in rid for rid in ids):
+        raise ValueError("Invalid run ID")
+    with db.transaction() as c:
+        if (config.DATA / ".maintenance").exists():
+            raise HTTPException(409, "Application update in progress")
+        rows = []
+        for rid in ids:
+            row = c.execute("SELECT * FROM runs WHERE id=?", (rid,)).fetchone()
+            if row is None:
+                if c.execute(
+                    "SELECT 1 FROM deleted_runs WHERE id=?", (rid,)
+                ).fetchone():
+                    continue
+                raise HTTPException(404, "Run not found; nothing was deleted")
+            if row["status"] not in db.TERMINAL:
+                raise HTTPException(
+                    409,
+                    "Stop unfinished runs before deleting them; nothing was deleted",
+                )
+            rows.append(row)
+        for row in rows:
+            rid = row["id"]
+            c.execute(
+                "INSERT INTO deleted_runs VALUES(?,?)", (rid, row["idempotency_key"])
+            )
+            for table in ("baselines", "session_reviews", "events"):
+                c.execute(f"DELETE FROM {table} WHERE run_id=?", (rid,))
+            c.execute("DELETE FROM runs WHERE id=?", (rid,))
+        if rows:
+            db.event(
+                c, None, {"type": "runs_deleted", "ids": [row["id"] for row in rows]}
+            )
+    # Commit history removal first. Tombstones also make retries safe and prevent
+    # leftover legacy manifests from being imported if disk cleanup fails.
+    cleanup_failed = []
+    for rid in ids:
+        try:
+            for path in (
+                config.DATA / "runs" / rid,
+                config.DATA / "exports" / (rid + ".zip"),
+            ):
+                if path.parent.is_symlink():
+                    raise OSError("Artifact directory is a symlink")
+                if path.is_symlink() or path.is_file():
+                    path.unlink()
+                elif path.exists():
+                    shutil.rmtree(path)
+        except OSError:
+            cleanup_failed.append(rid)
+    return {"deleted": ids, "cleanup_failed": cleanup_failed}
+
+
 @app.post("/api/runs", status_code=202)
 def launch(body: Launch):
     if body.setup_request_id and not body.qualification:
@@ -187,6 +248,14 @@ def launch(body: Launch):
     if len(set(body.targets)) != len(body.targets):
         raise ValueError("Duplicate targets")
     with db.connect() as c:
+        if c.execute(
+            "SELECT 1 FROM deleted_runs WHERE idempotency_key=?",
+            (body.idempotency_key,),
+        ).fetchone():
+            raise HTTPException(
+                409,
+                "This launch request belongs to a deleted run. Start a new benchmark.",
+            )
         prior = c.execute(
             "SELECT document FROM runs WHERE idempotency_key=?", (body.idempotency_key,)
         ).fetchone()
@@ -315,6 +384,8 @@ def baseline(rid: str, body: Baseline):
         raise ValueError("No valid score for selected target")
     slot = results.baseline_slot(m, body.target)
     with db.transaction() as c:
+        if not c.execute("SELECT 1 FROM runs WHERE id=?", (rid,)).fetchone():
+            raise HTTPException(404, "Run not found")
         c.execute(
             "INSERT OR REPLACE INTO baselines VALUES(?,?,?)", (slot, rid, body.target)
         )

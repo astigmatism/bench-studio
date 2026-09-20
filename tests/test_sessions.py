@@ -561,7 +561,7 @@ def test_database_migration_preserves_old_baselines(state):
     db.initialize()
     with db.connect() as c:
         assert c.execute("SELECT run_id FROM baselines").fetchone()[0] == "old-run"
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_prototype_csp_and_symlink_refusal(state):

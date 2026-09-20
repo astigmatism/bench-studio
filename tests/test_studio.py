@@ -615,3 +615,125 @@ def test_worker_uses_captured_image_identity_instead_of_mutable_tag(
     assert "sha256:captured-image" in calls[0]
     assert config.WORKER_IMAGE not in calls[0]
     assert calls[1][0] == "start"
+
+
+def finished_run(c, status, key):
+    run = launch(c, idempotency_key=key).json()
+    run["status"] = status
+    db.update_run(run)
+    root = config.DATA / "runs" / run["id"]
+    root.mkdir(parents=True)
+    atomic_json(root / "manifest.json", run)
+    (root / "run.log").write_text("retained evidence")
+    return run
+
+
+def test_bulk_delete_removes_results_artifacts_and_references(client):
+    c, _, _ = client
+    removed = [finished_run(c, status, f"delete-{status}") for status in db.TERMINAL]
+    kept = finished_run(c, "completed", "retained-request")
+    ids = [run["id"] for run in removed]
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO baselines VALUES(?,?,?)", ("test-slot", ids[0], "daytime")
+        )
+        conn.execute(
+            "INSERT INTO session_reviews VALUES(?,?,?,?,?,?)",
+            (ids[0], "daytime", "attempt-1", 1, "{}", "review-key"),
+        )
+    assert c.get(f"/api/runs/{ids[0]}/export").status_code == 200
+    response = c.post("/api/runs/delete", json={"ids": ids + [ids[0]]})
+    assert response.status_code == 200
+    assert response.json() == {"deleted": ids, "cleanup_failed": []}
+    assert [r["id"] for r in c.get("/api/runs").json()] == [kept["id"]]
+    for rid in ids:
+        assert db.get_run(rid) is None
+        assert not (config.DATA / "runs" / rid).exists()
+        for suffix in ("", "/logs", "/export", "/reviews", "/artifacts/run.log"):
+            assert c.get(f"/api/runs/{rid}{suffix}").status_code == 404
+    assert not (config.DATA / "exports" / (ids[0] + ".zip")).exists()
+    with db.connect() as conn:
+        for table in ("baselines", "session_reviews", "events"):
+            assert not conn.execute(
+                f"SELECT 1 FROM {table} WHERE run_id=?", (ids[0],)
+            ).fetchone()
+    db.initialize()
+    results.import_legacy()
+    assert [r["id"] for r in db.runs()] == [kept["id"]]
+    assert c.post("/api/runs/delete", json={"ids": ids}).status_code == 200
+    assert launch(c, idempotency_key="delete-completed").status_code == 409
+
+
+@pytest.mark.parametrize(
+    "status", sorted(db.ACTIVE | db.WAITING | {"queued", "blocked"})
+)
+def test_bulk_delete_rejects_unfinished_runs_atomically(client, status):
+    c, _, _ = client
+    finished = finished_run(c, "failed", "finished-request")
+    active = launch(c, idempotency_key="unfinished-request").json()
+    active["status"] = status
+    db.update_run(active)
+    response = c.post("/api/runs/delete", json={"ids": [finished["id"], active["id"]]})
+    assert response.status_code == 409
+    assert len(db.runs()) == 2
+    assert (config.DATA / "runs" / finished["id"] / "run.log").exists()
+
+
+def test_bulk_delete_validates_request_and_maintenance(client):
+    c, _, _ = client
+    run = finished_run(c, "failed", "finished-request")
+    for ids, status in (
+        ([], 422),
+        ([run["id"], "missing"], 404),
+        ([".."], 400),
+        (["../outside"], 400),
+    ):
+        assert c.post("/api/runs/delete", json={"ids": ids}).status_code == status
+    assert (
+        c.post(
+            "/api/runs/delete",
+            json={"ids": [run["id"]]},
+            headers={"Origin": "https://attacker.invalid"},
+        ).status_code
+        == 403
+    )
+    (config.DATA / ".maintenance").touch()
+    assert c.post("/api/runs/delete", json={"ids": [run["id"]]}).status_code == 409
+    assert db.get_run(run["id"]) is not None
+
+
+def test_delete_cleanup_failure_does_not_reimport_legacy_and_can_retry(
+    client, monkeypatch
+):
+    c, _, _ = client
+    run = finished_run(c, "completed", "finished-request")
+    from studio import api
+
+    with monkeypatch.context() as patch:
+
+        def fail(*args):
+            raise PermissionError("Read-only artifacts")
+
+        patch.setattr(api.shutil, "rmtree", fail)
+        response = c.post("/api/runs/delete", json={"ids": [run["id"]]})
+    assert response.json()["cleanup_failed"] == [run["id"]]
+    assert (config.DATA / "runs" / run["id"] / "manifest.json").exists()
+    db.initialize()
+    results.import_legacy()
+    assert not db.runs()
+    response = c.post("/api/runs/delete", json={"ids": [run["id"]]})
+    assert response.json()["cleanup_failed"] == []
+    assert not (config.DATA / "runs" / run["id"]).exists()
+
+
+def test_delete_symlink_artifacts_never_follows_target(client, tmp_path):
+    c, _, _ = client
+    run = finished_run(c, "completed", "finished-request")
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    (outside / "evidence.txt").write_text("unrelated")
+    (config.DATA / "runs" / run["id"] / "linked").symlink_to(
+        outside, target_is_directory=True
+    )
+    assert c.post("/api/runs/delete", json={"ids": [run["id"]]}).status_code == 200
+    assert (outside / "evidence.txt").read_text() == "unrelated"

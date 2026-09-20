@@ -20,6 +20,7 @@ import {
   RotateCcw,
   Square,
   Sun,
+  Trash2,
   Zap,
 } from "lucide-react";
 import {
@@ -162,6 +163,9 @@ function App() {
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [selected, setSelected] = useState<string[]>([]),
+    [deleteIds, setDeleteIds] = useState<string[]>([]),
+    [deleteBusy, setDeleteBusy] = useState(false),
+    [deleteError, setDeleteError] = useState(""),
     [detail, setDetail] = useState<string>(""),
     [launchProfile, setLaunchProfile] = useState("coding"),
     [rerun, setRerun] = useState<Obj | null>(null),
@@ -170,9 +174,18 @@ function App() {
     [setupSmoke, setSetupSmoke] = useState(false),
     [refresh, setRefresh] = useState(0);
   const setupSubmission = useRef<string | null>(null);
+  const historyVersion = useRef(0);
   const load = useCallback(async () => {
+    const version = historyVersion.current;
     try {
-      setRuns(await api("/runs"));
+      const latest = await api("/runs");
+      if (version !== historyVersion.current) return;
+      setRuns(latest);
+      setSelected((ids) =>
+        ids.filter((id) =>
+          latest.some((r: Obj) => r.id === id && terminal.has(r.status)),
+        ),
+      );
       setHealth(await api("/health"));
       setProfiles(await api("/profiles"));
     } catch (e) {
@@ -295,6 +308,32 @@ function App() {
       setSetupBusy(null);
     }
   };
+  const deleteSelected = async () => {
+    if (deleteBusy) return;
+    setDeleteBusy(true);
+    setDeleteError("");
+    try {
+      const response = await api("/runs/delete", { ids: deleteIds });
+      // Ignore history requests that started before the deletion completed.
+      historyVersion.current++;
+      setRuns((items) => items.filter((r) => !response.deleted.includes(r.id)));
+      setSelected((ids) => ids.filter((id) => !response.deleted.includes(id)));
+      setDeleteIds([]);
+      setNotice(
+        `Deleted ${response.deleted.length} ${response.deleted.length === 1 ? "run" : "runs"}.`,
+      );
+      if (response.cleanup_failed?.length)
+        setError(
+          "Runs were removed from history, but some files could not be removed from disk. Check the data directory's permissions.",
+        );
+      await load();
+    } catch (e) {
+      setDeleteError(String(e));
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+  const history = runs.filter((r) => terminal.has(r.status));
   const current = runs.find((r) => r.id === detail);
   return (
     <div id="app">
@@ -332,117 +371,6 @@ function App() {
         </div>
       </header>
       <main className="bs-main">
-        {health.session_setup && (
-          <div
-            role="status"
-            aria-label="Benchmark suite setup"
-            className={`bs-alert bs-setup${health.session_setup.phase === "ready" ? " bs-setup-ready" : ""}`}
-          >
-            <div>
-              <strong>
-                {health.session_setup.phase === "ready"
-                  ? "Benchmark suites available: "
-                  : "Benchmark suite setup: "}
-              </strong>
-              {health.session_setup.detail}
-            </div>
-            {(health.session_setup.can_start ||
-              health.session_setup.can_stop) && (
-              <div className="bs-setup-suite">
-                {health.session_setup.can_start && (
-                  <>
-                    {health.session_setup.phase !== "ready" && (
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={setupSmoke}
-                          disabled={!!setupBusy}
-                          onChange={(event) => {
-                            setSetupSmoke(event.target.checked);
-                            setupSubmission.current = null;
-                          }}
-                        />
-                        Also run model smoke tests (optional; uses the model)
-                      </label>
-                    )}
-                    <button
-                      className="bs-button"
-                      disabled={!!setupBusy}
-                      onClick={() =>
-                        setupAction(
-                          "start",
-                          health.session_setup.phase === "ready" || setupSmoke,
-                        )
-                      }
-                    >
-                      {setupBusy === "start"
-                        ? "Starting setup…"
-                        : health.session_setup.phase === "ready"
-                          ? "Run optional model checks"
-                          : "Start setup"}
-                    </button>
-                  </>
-                )}
-                {health.session_setup.can_stop && (
-                  <button
-                    className="bs-button"
-                    disabled={!!setupBusy}
-                    onClick={() => setupAction("stop")}
-                  >
-                    {setupBusy === "stop" ? "Stopping setup…" : "Stop setup"}
-                  </button>
-                )}
-              </div>
-            )}
-            {Object.entries(health.session_setup.suites || {}).map(
-              ([suite, value]) => {
-                const state = value as Obj;
-                const name =
-                  profiles.find((p) => p.id === suite)?.name || suite;
-                return (
-                  <div key={suite} className="bs-setup-suite">
-                    <div>
-                      <strong>
-                        {name}:{" "}
-                        {state.available
-                          ? "Available"
-                          : label(state.phase.replaceAll("_", " "))}
-                      </strong>
-                      {state.available && state.phase !== "ready" && (
-                        <span>
-                          {" "}
-                          · Model smoke test:{" "}
-                          {label(state.phase.replaceAll("_", " "))}
-                        </span>
-                      )}
-                      {state.detail && <span> · {state.detail}</span>}
-                      {typeof state.turns === "number" && (
-                        <span> · {state.turns} model turns</span>
-                      )}
-                      {state.generation?.active && (
-                        <span>
-                          {" "}
-                          · Receiving response (
-                          {state.generation.characters_received.toLocaleString()}{" "}
-                          characters)
-                        </span>
-                      )}
-                    </div>
-                    {state.run_id && (
-                      <button
-                        className="bs-quiet"
-                        onClick={() => openRun(state.run_id)}
-                        aria-label={`View ${name} smoke run`}
-                      >
-                        View run
-                      </button>
-                    )}
-                  </div>
-                );
-              },
-            )}
-          </div>
-        )}
         {error && (
           <div role="alert" className="error">
             {error}
@@ -522,19 +450,55 @@ function App() {
               ))}
             <div className="bs-section-head">
               <h2>Run history</h2>
-              <Button
-                disabled={selected.length !== 2}
-                onClick={() => navigate("compare")}
-              >
-                <GitCompareArrows size={16} />
-                Compare {selected.length} selected
-              </Button>
+              <div className="bs-inline bs-history-actions">
+                <span className="bs-small" role="status">
+                  {selected.length} selected
+                </span>
+                <Button
+                  disabled={selected.length !== 2}
+                  onClick={() => navigate("compare")}
+                >
+                  <GitCompareArrows size={16} />
+                  Compare selected
+                </Button>
+                <button
+                  className="bs-button bs-danger"
+                  disabled={!selected.length || deleteBusy}
+                  onClick={() => {
+                    setDeleteError("");
+                    setDeleteIds([...selected]);
+                  }}
+                >
+                  <Trash2 size={16} />
+                  Delete selected
+                </button>
+              </div>
             </div>
             <div className="bs-table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th />
+                    <th className="bs-checkcell">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all runs"
+                        checked={
+                          !!history.length && selected.length === history.length
+                        }
+                        ref={(node) => {
+                          if (node)
+                            node.indeterminate =
+                              selected.length > 0 &&
+                              selected.length < history.length;
+                        }}
+                        disabled={!history.length || deleteBusy}
+                        onChange={(e) =>
+                          setSelected(
+                            e.target.checked ? history.map((r) => r.id) : [],
+                          )
+                        }
+                      />
+                    </th>
                     <th>Benchmark</th>
                     <th>Model</th>
                     <th>Result</th>
@@ -543,13 +507,14 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {runs.map((r) => (
+                  {history.map((r) => (
                     <tr key={r.id}>
                       <td className="bs-checkcell">
                         <input
                           type="checkbox"
                           aria-label={`Select ${r.id}`}
                           checked={selected.includes(r.id)}
+                          disabled={deleteBusy}
                           onChange={(e) =>
                             setSelected(
                               e.target.checked
@@ -622,9 +587,9 @@ function App() {
                   ))}
                 </tbody>
               </table>
-              {!runs.length && (
+              {!history.length && (
                 <div className="bs-empty">
-                  Your first baseline starts with a benchmark.
+                  No finished runs yet. Your results will appear here.
                 </div>
               )}
             </div>
@@ -649,6 +614,127 @@ function App() {
                 New benchmark
               </Button>
             </div>
+            {health.session_setup && (
+              <details className="bs-setup">
+                <summary>
+                  Suite setup
+                  <span className="bs-small">
+                    {health.session_setup.can_stop
+                      ? "In progress"
+                      : health.session_setup.phase === "ready"
+                        ? "Ready"
+                        : "Setup required"}
+                  </span>
+                </summary>
+                <div
+                  role="status"
+                  aria-label="Benchmark suite setup"
+                  className="bs-setup-content"
+                >
+                  <p className="bs-small">{health.session_setup.detail}</p>
+                  {(health.session_setup.can_start ||
+                    health.session_setup.can_stop) && (
+                    <div className="bs-setup-suite">
+                      {health.session_setup.can_start && (
+                        <>
+                          {health.session_setup.phase !== "ready" && (
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={setupSmoke}
+                                disabled={!!setupBusy}
+                                onChange={(event) => {
+                                  setSetupSmoke(event.target.checked);
+                                  setupSubmission.current = null;
+                                }}
+                              />
+                              Also run model smoke tests (optional; uses the
+                              model)
+                            </label>
+                          )}
+                          <button
+                            className="bs-button"
+                            disabled={!!setupBusy}
+                            onClick={() =>
+                              setupAction(
+                                "start",
+                                health.session_setup.phase === "ready" ||
+                                  setupSmoke,
+                              )
+                            }
+                          >
+                            {setupBusy === "start"
+                              ? "Starting setup…"
+                              : health.session_setup.phase === "ready"
+                                ? "Run optional model checks"
+                                : "Start setup"}
+                          </button>
+                        </>
+                      )}
+                      {health.session_setup.can_stop && (
+                        <button
+                          className="bs-button"
+                          disabled={!!setupBusy}
+                          onClick={() => setupAction("stop")}
+                        >
+                          {setupBusy === "stop"
+                            ? "Stopping setup…"
+                            : "Stop setup"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {Object.entries(health.session_setup.suites || {}).map(
+                    ([suite, value]) => {
+                      const state = value as Obj;
+                      const name =
+                        profiles.find((p) => p.id === suite)?.name || suite;
+                      return (
+                        <div key={suite} className="bs-setup-suite">
+                          <div>
+                            <strong>
+                              {name}:{" "}
+                              {state.available
+                                ? "Available"
+                                : label(state.phase.replaceAll("_", " "))}
+                            </strong>
+                            {state.available && state.phase !== "ready" && (
+                              <span>
+                                {" "}
+                                · Model smoke test:{" "}
+                                {label(state.phase.replaceAll("_", " "))}
+                              </span>
+                            )}
+                            {state.detail && <span> · {state.detail}</span>}
+                            {typeof state.turns === "number" && (
+                              <span> · {state.turns} model turns</span>
+                            )}
+                            {state.generation?.active && (
+                              <span>
+                                {" "}
+                                · Receiving response (
+                                {state.generation.characters_received.toLocaleString()}{" "}
+                                characters)
+                              </span>
+                            )}
+                          </div>
+                          {state.run_id &&
+                            runs.some((r) => r.id === state.run_id) && (
+                              <button
+                                className="bs-quiet"
+                                onClick={() => openRun(state.run_id)}
+                                aria-label={`View ${name} smoke run`}
+                              >
+                                View run
+                              </button>
+                            )}
+                        </div>
+                      );
+                    },
+                  )}
+                </div>
+              </details>
+            )}
             <div className="bs-grid">
               {profiles.map((p) => (
                 <button
@@ -702,10 +788,25 @@ function App() {
             refresh={refresh}
           />
         )}
+        {view === "detail" && !current && (
+          <div className="bs-empty">
+            <p>This run is no longer available.</p>
+            <Button onClick={() => navigate("runs")}>Back to runs</Button>
+          </div>
+        )}
         {view === "compare" && (
           <Comparison runs={runs} initial={selected} onError={setError} />
         )}
       </main>
+      {deleteIds.length > 0 && (
+        <DeleteRunsDialog
+          count={deleteIds.length}
+          busy={deleteBusy}
+          error={deleteError}
+          cancel={() => setDeleteIds([])}
+          confirm={deleteSelected}
+        />
+      )}
       <footer className="bs-end">
         <span>Local inference · results stay on this machine</span>
         <span className="revision">
@@ -713,6 +814,69 @@ function App() {
         </span>
       </footer>
     </div>
+  );
+}
+function DeleteRunsDialog({
+  count,
+  busy,
+  error,
+  cancel,
+  confirm,
+}: {
+  count: number;
+  busy: boolean;
+  error: string;
+  cancel: () => void;
+  confirm: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    dialog.current?.showModal();
+  }, []);
+  return (
+    <dialog
+      ref={dialog}
+      className="bs-delete-dialog"
+      aria-labelledby="delete-title"
+      aria-describedby="delete-description"
+      onCancel={(event) => {
+        event.preventDefault();
+        if (!busy) cancel();
+      }}
+    >
+      <h2 id="delete-title">
+        Delete {count} {count === 1 ? "run" : "runs"}?
+      </h2>
+      <p id="delete-description">
+        This permanently deletes the selected results, reports, logs, and any
+        baselines for these runs. This cannot be undone.
+      </p>
+      {error && (
+        <div role="alert" className="error">
+          {error}
+        </div>
+      )}
+      <div className="bs-inline">
+        <button
+          className="bs-button"
+          autoFocus
+          disabled={busy}
+          onClick={cancel}
+        >
+          Cancel
+        </button>
+        <button
+          className="bs-button bs-danger"
+          disabled={busy}
+          onClick={confirm}
+        >
+          <Trash2 size={16} />
+          {busy
+            ? "Deleting…"
+            : `Delete ${count} ${count === 1 ? "run" : "runs"}`}
+        </button>
+      </div>
+    </dialog>
   );
 }
 function Launcher({

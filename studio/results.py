@@ -29,6 +29,15 @@ def import_legacy():
                 )
             m["family"] = "speed"
             with db.transaction() as c:
+                # Deleted legacy manifests must not reappear after a restart,
+                # including when filesystem cleanup could not finish.
+                if (
+                    c.execute(
+                        "SELECT 1 FROM deleted_runs WHERE id=?", (m["id"],)
+                    ).fetchone()
+                    or c.execute("SELECT 1 FROM runs WHERE id=?", (m["id"],)).fetchone()
+                ):
+                    continue
                 db.put_run(c, m)
         except (ValueError, OSError, KeyError):
             continue
