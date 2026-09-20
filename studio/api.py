@@ -242,7 +242,9 @@ def delete_runs(body: DeleteRuns):
 @app.post("/api/runs", status_code=202)
 def launch(body: Launch):
     if body.setup_request_id and not body.qualification:
-        raise ValueError("Setup ownership is only valid for qualification runs")
+        raise ValueError(
+            "Eligibility request ownership is only valid for qualification runs"
+        )
     if body.mode not in ["sequential", "parallel"]:
         raise ValueError("Invalid execution mode")
     if len(set(body.targets)) != len(body.targets):

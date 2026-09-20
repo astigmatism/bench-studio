@@ -409,7 +409,7 @@ test("deletion errors preserve selection and pending deletion cannot be submitte
   ).toBeChecked();
 });
 
-test("suite setup stays out of the workspace and expands only within Profiles", async ({
+test("suite eligibility stays out of the workspace and expands only within Profiles", async ({
   page,
 }) => {
   await page.route("**/api/health", (route) =>
@@ -428,12 +428,14 @@ test("suite setup stays out of the workspace and expands only within Profiles", 
   );
   await page.reload();
   await expect(
-    page.getByRole("status", { name: "Benchmark suite setup" }),
+    page.getByRole("status", { name: "Benchmark suite eligibility" }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Profiles", exact: true }).click();
-  const setup = page.getByRole("status", { name: "Benchmark suite setup" });
+  const setup = page.getByRole("status", {
+    name: "Benchmark suite eligibility",
+  });
   await expect(setup).not.toBeVisible();
-  await page.locator("summary").filter({ hasText: "Suite setup" }).focus();
+  await page.locator("summary").filter({ hasText: "Eligibility" }).focus();
   await page.keyboard.press("Enter");
   await expect(setup).toBeVisible();
   await expect(

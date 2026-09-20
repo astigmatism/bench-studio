@@ -58,7 +58,7 @@ async function setup(page: any, run: any = base, setupState: any = null) {
     else if (path === "/api/session-setup/start") {
       setupState = {
         phase: "requested",
-        detail: "Setup requested. Waiting for the controller.",
+        detail: "Eligibility check requested. Waiting for the controller.",
         can_start: false,
         can_stop: true,
       };
@@ -67,7 +67,7 @@ async function setup(page: any, run: any = base, setupState: any = null) {
       setupState = {
         phase: "paused",
         detail:
-          "Suite setup is idle. Updates and restarts do not start checks.",
+          "Eligibility checks are idle. Updates and restarts do not start checks.",
         can_start: true,
         can_stop: false,
       };
@@ -137,7 +137,7 @@ async function setup(page: any, run: any = base, setupState: any = null) {
 }
 async function openSetup(page: any) {
   await page.getByRole("button", { name: "Profiles", exact: true }).click();
-  await page.locator("summary").filter({ hasText: "Suite setup" }).click();
+  await page.locator("summary").filter({ hasText: "Eligibility" }).click();
 }
 
 test("setup only starts on click and stop persists across browser reloads", async ({
@@ -152,12 +152,12 @@ test("setup only starts on click and stop persists across browser reloads", asyn
   await setup(page, base, {
     phase: "paused",
     detail:
-      "Suite setup is idle. Select Start setup to validate fixtures and run model smoke tests. Updates and restarts do not start checks.",
+      "Eligibility checks are idle. Select Check eligibility to validate fixtures and run model smoke tests. Updates and restarts do not start checks.",
     can_start: true,
     can_stop: false,
   });
   await expect(
-    page.getByRole("button", { name: "Start setup", exact: true }),
+    page.getByRole("button", { name: "Check eligibility", exact: true }),
   ).toBeVisible();
   expect(await page.evaluate(() => window.isSecureContext)).toBe(
     testInfo.project.name !== "lan-http",
@@ -165,35 +165,39 @@ test("setup only starts on click and stop persists across browser reloads", asyn
   await page.reload();
   await openSetup(page);
   await expect(
-    page.getByRole("button", { name: "Start setup", exact: true }),
+    page.getByRole("button", { name: "Check eligibility", exact: true }),
   ).toBeVisible();
   expect(mutations).toEqual([]);
   const start = page.waitForRequest(
     (r) => r.url().endsWith("/session-setup/start") && r.method() === "POST",
   );
-  await page.getByRole("button", { name: "Start setup", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Check eligibility", exact: true })
+    .click();
   const preparationRequest = (await start).postDataJSON();
   expect(preparationRequest.idempotency_key).toBeTruthy();
   expect(preparationRequest.run_smoke).toBe(false);
   await expect(
-    page.getByText("Setup request accepted.", { exact: true }),
+    page.getByText("Eligibility request accepted.", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Stop setup", exact: true }),
-  ).toBeVisible();
-  await page.reload();
-  await openSetup(page);
-  await expect(
-    page.getByRole("button", { name: "Stop setup", exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Stop setup", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Start setup", exact: true }),
+    page.getByRole("button", { name: "Stop eligibility check", exact: true }),
   ).toBeVisible();
   await page.reload();
   await openSetup(page);
   await expect(
-    page.getByRole("button", { name: "Start setup", exact: true }),
+    page.getByRole("button", { name: "Stop eligibility check", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Stop eligibility check", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Check eligibility", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await openSetup(page);
+  await expect(
+    page.getByRole("button", { name: "Check eligibility", exact: true }),
   ).toBeVisible();
   expect(mutations).toEqual([
     "/api/session-setup/start",
@@ -226,7 +230,9 @@ test("model smoke tests require an explicit choice", async ({ page }) => {
   const request = page.waitForRequest(
     (r) => r.url().endsWith("/session-setup/start") && r.method() === "POST",
   );
-  await page.getByRole("button", { name: "Start setup", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Check eligibility", exact: true })
+    .click();
   expect((await request).postDataJSON().run_smoke).toBe(true);
 });
 
@@ -250,7 +256,9 @@ test("failed model smoke leaves prepared profiles launchable after reload", asyn
   });
   await page.reload();
   await openSetup(page);
-  const banner = page.getByRole("status", { name: "Benchmark suite setup" });
+  const banner = page.getByRole("status", {
+    name: "Benchmark suite eligibility",
+  });
   await expect(banner).toContainText("Coding sessions: Available");
   await expect(banner).toContainText("Model smoke test: Failed");
   await expect(
@@ -277,7 +285,7 @@ test("failed model smoke leaves prepared profiles launchable after reload", asyn
 test("setup shows pending feedback and server failures", async ({ page }) => {
   await setup(page, base, {
     phase: "paused",
-    detail: "Suite setup is idle.",
+    detail: "Eligibility checks are idle.",
     can_start: true,
     can_stop: false,
   });
@@ -293,16 +301,18 @@ test("setup shows pending feedback and server failures", async ({ page }) => {
       body: JSON.stringify({ detail: "Application update in progress" }),
     });
   });
-  await page.getByRole("button", { name: "Start setup", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Check eligibility", exact: true })
+    .click();
   await expect(
-    page.getByRole("button", { name: "Starting setup…", exact: true }),
+    page.getByRole("button", { name: "Checking eligibility…", exact: true }),
   ).toBeDisabled();
   respond();
   await expect(page.getByRole("alert")).toContainText(
-    "Could not start suite setup: Error: Application update in progress",
+    "Could not start eligibility check: Error: Application update in progress",
   );
   await expect(
-    page.getByRole("button", { name: "Start setup", exact: true }),
+    page.getByRole("button", { name: "Check eligibility", exact: true }),
   ).toBeEnabled();
 });
 
@@ -318,16 +328,18 @@ test("setup reports browser-side failures instead of silently ignoring the click
   });
   await setup(page, base, {
     phase: "paused",
-    detail: "Suite setup is idle.",
+    detail: "Eligibility checks are idle.",
     can_start: true,
     can_stop: false,
   });
-  await page.getByRole("button", { name: "Start setup", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Check eligibility", exact: true })
+    .click();
   await expect(page.getByRole("alert")).toContainText(
     "Browser random source unavailable",
   );
   await expect(
-    page.getByRole("button", { name: "Start setup", exact: true }),
+    page.getByRole("button", { name: "Check eligibility", exact: true }),
   ).toBeEnabled();
 });
 
@@ -778,7 +790,9 @@ test("setup shows each suite's phase and opens the active smoke run", async ({
       },
     },
   });
-  const banner = page.getByRole("status", { name: "Benchmark suite setup" });
+  const banner = page.getByRole("status", {
+    name: "Benchmark suite eligibility",
+  });
   await expect(banner).toContainText("Coding sessions: Running");
   await expect(banner).toContainText("Receiving response (3,142 characters)");
   await expect(banner).toContainText(
@@ -812,7 +826,7 @@ test("finished setup retains failure evidence after reload", async ({
   await setup(page, base, {
     phase: "needs_attention",
     detail:
-      "Offline preparation passed. 1 of 3 new suites ready. Setup has stopped; select Start setup to retry the suites that have not passed.",
+      "Offline preparation passed. 1 of 3 new suites ready. Eligibility checks have stopped; select Check eligibility to retry the suites that have not passed.",
     can_start: true,
     can_stop: false,
     suites: {
@@ -832,17 +846,19 @@ test("finished setup retains failure evidence after reload", async ({
   });
   await page.reload();
   await openSetup(page);
-  const banner = page.getByRole("status", { name: "Benchmark suite setup" });
-  await expect(banner).toContainText("Setup has stopped");
+  const banner = page.getByRole("status", {
+    name: "Benchmark suite eligibility",
+  });
+  await expect(banner).toContainText("Eligibility checks have stopped");
   await expect(banner).toContainText(
     "30.0 active minutes · 0 verification attempts",
   );
   await expect(banner).toContainText("Vision checks: Ready");
   await expect(
-    banner.getByRole("button", { name: "Start setup", exact: true }),
+    banner.getByRole("button", { name: "Check eligibility", exact: true }),
   ).toBeVisible();
   await expect(
-    banner.getByRole("button", { name: "Stop setup", exact: true }),
+    banner.getByRole("button", { name: "Stop eligibility check", exact: true }),
   ).toHaveCount(0);
 });
 
@@ -867,7 +883,7 @@ test("blocked launch can prepare offline in place and retain benchmark choices",
                 ready,
                 prepared: ready,
                 reason:
-                  "Select Start setup to validate the benchmark projects and tests.",
+                  "Select Check eligibility to validate the benchmark projects and tests.",
               },
             }
           : p,
@@ -906,16 +922,18 @@ test("blocked launch can prepare offline in place and retain benchmark choices",
     name: "Queue benchmark",
     exact: true,
   });
-  const panel = page.getByRole("region", { name: "Profile setup" });
+  const panel = page.getByRole("region", { name: "Profile eligibility" });
   await expect(queue).toBeDisabled();
   await expect(panel).toContainText(
-    "Setup does not use the model or start a benchmark",
+    "Eligibility checks do not use the model or start a benchmark",
   );
   expect(mutations).toEqual([]);
-  await panel.getByRole("button", { name: "Start setup", exact: true }).click();
+  await panel
+    .getByRole("button", { name: "Check eligibility", exact: true })
+    .click();
   await expect(panel).toContainText("6 of 62 checks validated");
   await expect(
-    panel.getByRole("button", { name: "Stop setup", exact: true }),
+    panel.getByRole("button", { name: "Stop eligibility check", exact: true }),
   ).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   expect(
@@ -969,7 +987,7 @@ test("launch setup exposes failures and stop without leaving the form", async ({
   await page
     .getByLabel("Profile", { exact: true })
     .selectOption("coding-sessions");
-  const panel = page.getByRole("region", { name: "Profile setup" });
+  const panel = page.getByRole("region", { name: "Profile eligibility" });
   await expect(panel).toContainText("Offline checks failed");
   await page.route("**/api/session-setup/start", (route) =>
     route.fulfill({
@@ -977,18 +995,24 @@ test("launch setup exposes failures and stop without leaving the form", async ({
       json: { detail: "Application update in progress" },
     }),
   );
-  await panel.getByRole("button", { name: "Start setup", exact: true }).click();
+  await panel
+    .getByRole("button", { name: "Check eligibility", exact: true })
+    .click();
   await expect(page.getByRole("alert")).toContainText(
     "Application update in progress",
   );
   await expect(
-    panel.getByRole("button", { name: "Start setup", exact: true }),
+    panel.getByRole("button", { name: "Check eligibility", exact: true }),
   ).toBeEnabled();
   await page.unroute("**/api/session-setup/start");
-  await panel.getByRole("button", { name: "Start setup", exact: true }).click();
-  await panel.getByRole("button", { name: "Stop setup", exact: true }).click();
+  await panel
+    .getByRole("button", { name: "Check eligibility", exact: true })
+    .click();
+  await panel
+    .getByRole("button", { name: "Stop eligibility check", exact: true })
+    .click();
   await expect(
-    panel.getByRole("button", { name: "Start setup", exact: true }),
+    panel.getByRole("button", { name: "Check eligibility", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Queue benchmark", exact: true }),

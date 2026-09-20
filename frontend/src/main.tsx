@@ -298,16 +298,16 @@ function App() {
       setupSubmission.current = null;
       const message =
         action === "stop"
-          ? "Stop requested. Setup is cleaning up its work."
+          ? "Stop requested. Eligibility checks are stopping."
           : response.active
-            ? "Setup request accepted. Waiting for the controller to begin preparation."
-            : "This setup request has already finished. Refreshing its status.";
+            ? "Eligibility request accepted. Waiting for the controller to begin eligibility checks."
+            : "This eligibility request has already finished. Refreshing its status.";
       setNotice(
         action === "stop"
           ? "Stop request accepted."
           : response.active
-            ? "Setup request accepted."
-            : "This setup request has already finished.",
+            ? "Eligibility request accepted."
+            : "This eligibility request has already finished.",
       );
       setHealth((previous) => ({
         ...previous,
@@ -321,7 +321,7 @@ function App() {
       }));
       await load();
     } catch (e) {
-      setError(`Could not ${action} suite setup: ${String(e)}`);
+      setError(`Could not ${action} eligibility check: ${String(e)}`);
     } finally {
       setSetupBusy(null);
     }
@@ -635,18 +635,18 @@ function App() {
             {health.session_setup && (
               <details className="bs-setup">
                 <summary>
-                  Suite setup
+                  Eligibility
                   <span className="bs-small">
                     {health.session_setup.can_stop
                       ? "In progress"
                       : health.session_setup.phase === "ready"
                         ? "Ready"
-                        : "Setup required"}
+                        : "Eligibility check required"}
                   </span>
                 </summary>
                 <div
                   role="status"
-                  aria-label="Benchmark suite setup"
+                  aria-label="Benchmark suite eligibility"
                   className="bs-setup-content"
                 >
                   <p className="bs-small">{health.session_setup.detail}</p>
@@ -682,10 +682,10 @@ function App() {
                             }
                           >
                             {setupBusy === "start"
-                              ? "Starting setup…"
+                              ? "Checking eligibility…"
                               : health.session_setup.phase === "ready"
                                 ? "Run optional model checks"
-                                : "Start setup"}
+                                : "Check eligibility"}
                           </button>
                         </>
                       )}
@@ -696,8 +696,8 @@ function App() {
                           onClick={() => setupAction("stop")}
                         >
                           {setupBusy === "stop"
-                            ? "Stopping setup…"
-                            : "Stop setup"}
+                            ? "Stopping eligibility check…"
+                            : "Stop eligibility check"}
                         </button>
                       )}
                     </div>
@@ -1220,30 +1220,40 @@ function Launcher({
       {needsSetup && (
         <section
           className="bs-surface bs-launch-setup"
-          aria-label="Profile setup"
+          aria-label="Profile eligibility"
         >
           <div className="bs-spread">
-            <h3>{setup.can_stop ? "Setup in progress" : "Setup required"}</h3>
+            <h3>
+              {setup.can_stop
+                ? "Checking eligibility"
+                : "Eligibility check required"}
+            </h3>
             {setup.can_stop ? (
               <Button disabled={!!setupBusy} onClick={stopSetup}>
-                {setupBusy === "stop" ? "Stopping setup…" : "Stop setup"}
+                {setupBusy === "stop"
+                  ? "Stopping eligibility check…"
+                  : "Stop eligibility check"}
               </Button>
             ) : (
               <Button
                 disabled={!!setupBusy || setup.can_start === false}
                 onClick={startSetup}
               >
-                {setupBusy === "start" ? "Starting setup…" : "Start setup"}
+                {setupBusy === "start"
+                  ? "Checking eligibility…"
+                  : "Check eligibility"}
               </Button>
             )}
           </div>
           <p className="bs-small" role="status">
             {setup.can_stop || setup.can_start === false
               ? setup.detail
-              : "Validate this suite’s projects and tests on the server. Setup does not use the model or start a benchmark. Your selections will stay here."}
+              : "Validate this suite’s projects and tests on the server. Eligibility checks do not use the model or start a benchmark. Your selections will stay here."}
           </p>
           {setup.last_error && (
-            <p className="bs-small">Last setup attempt: {setup.last_error}</p>
+            <p className="bs-small">
+              Last eligibility check: {setup.last_error}
+            </p>
           )}
         </section>
       )}

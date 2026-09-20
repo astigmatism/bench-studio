@@ -259,7 +259,10 @@ def test_preparation_progress_survives_browser_reconnection(setup_state):
     with TestClient(app) as client:
         for _ in range(2):
             state = client.get("/api/health").json()["session_setup"]
-            assert "13 of 62 checks validated" in state["detail"]
+            assert (
+                "Checking benchmark eligibility: 13 of 62 checks passed"
+                in state["detail"]
+            )
             assert "No model or GPU work" in state["detail"]
             assert state["preparation_progress"]["completed"] == 13
             assert state["can_stop"]

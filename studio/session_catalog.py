@@ -103,7 +103,7 @@ def qualification_state(state):
         return dict(
             state,
             phase="missing_run",
-            detail="Qualification run is unavailable; setup needs attention.",
+            detail="Qualification run is unavailable; eligibility needs attention.",
         )
     phase = run["status"]
     detail = run.get("error") or run.get("progress")
@@ -166,7 +166,7 @@ def readiness(suite, *, evidence=None, setup=None):
     )
     # Model outcomes are benchmark results, not installation requirements.
     ready = prepared
-    reason = "Select Start setup to validate this suite's fixtures. Model smoke tests are optional; no checks start automatically."
+    reason = "Select Check eligibility to validate this suite's fixtures. Model smoke tests are optional; no checks start automatically."
     if setup:
         if setup.get("phase") in {
             "preparing",

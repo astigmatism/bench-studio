@@ -1,4 +1,4 @@
-"""Prepare and qualify suites only after an explicit, durable setup request.
+"""Prepare and qualify suites only after an explicit, durable eligibility request.
 
 The controller owns this state machine. Offline preparation holds the same lock
 as updates and launches; live qualification uses the ordinary durable queue.
@@ -26,7 +26,7 @@ from .session_catalog import (
 )
 
 SUITES = ("coding-sessions", "vision-checks", "visual-design")
-PAUSED_DETAIL = "Select Start setup to validate the benchmark projects and tests. This preparation does not use the model. Model smoke tests are optional and do not unlock profiles. Updates and restarts do not start checks."
+PAUSED_DETAIL = "Select Check eligibility to validate the benchmark projects and tests. Eligibility checks do not use the model. Model smoke tests are optional and do not affect eligibility. Updates and restarts do not start checks."
 
 
 def controls(state):
@@ -36,22 +36,22 @@ def controls(state):
     if not active and (state.get("phase") == "preparing" or session_control.stopping()):
         state.update(
             phase="stopping",
-            detail="Stopping suite setup and its benchmarks. Evidence is retained; updates can proceed after cleanup finishes.",
+            detail="Stopping eligibility checks and optional model checks. Evidence is retained; updates can proceed after cleanup finishes.",
             can_start=False,
         )
     elif active and state.get("request_id") != control["id"]:
         state.update(
             phase="requested",
-            detail="Setup requested. Waiting for the controller; no new setup request is needed.",
+            detail="Eligibility check requested. Waiting for the controller; no new eligibility request is needed.",
             suites={},
         )
     elif not active and state.get("phase") == "needs_attention":
         state["detail"] += (
-            " Setup has stopped. Model results are retained; use Run again to retry a specific smoke test."
+            " Eligibility checks have stopped. Model results are retained; use Run again to retry a specific smoke test."
         )
     elif not active and state.get("phase") != "ready":
         detail = (
-            "Last setup attempt failed: " + state["last_error"] + ". "
+            "Last eligibility check failed: " + state["last_error"] + ". "
             if state.get("last_error")
             else ""
         ) + PAUSED_DETAIL
@@ -61,7 +61,7 @@ def controls(state):
 
 def qualification_summary(suites):
     phases = {s["phase"] for s in suites.values()}
-    prefix = "Fixtures validated. All benchmark suites are available. "
+    prefix = "Eligibility checks passed. All benchmark suites are available. "
     if phases & (db.ACTIVE | db.WAITING | {"queued"}):
         return (
             "qualifying",
@@ -106,7 +106,7 @@ def status():
             progress = read_json(progress_path)
             state["preparation_progress"] = progress
             state["detail"] = (
-                f"Preparing benchmark fixtures: {progress['completed']} of {progress['total']} checks validated. "
+                f"Checking benchmark eligibility: {progress['completed']} of {progress['total']} checks passed. "
                 f"Last check: {progress['last_check']}. No model or GPU work is required."
             )
     if state.get("phase") not in {
@@ -218,7 +218,7 @@ class SessionSetup:
             }
             self.publish(
                 "requested",
-                "Setup requested. Waiting for the machine to be available.",
+                "Eligibility check requested. Waiting for the machine to be available.",
                 suites={s: {"phase": "pending"} for s in SUITES},
             )
         self.inactive_published = False
@@ -274,7 +274,7 @@ class SessionSetup:
                 self.release()
                 self.publish(
                     "interrupted",
-                    "Fixture preparation stopped; evidence retained. Select Start setup to try again.",
+                    "Fixture preparation stopped; evidence retained. Select Check eligibility to try again.",
                 )
 
     def tick(self):
@@ -292,7 +292,9 @@ class SessionSetup:
             finally:
                 self.release()
                 self.publish(
-                    "failed", "Suite setup failed: " + str(exc), last_error=str(exc)
+                    "failed",
+                    "Eligibility check failed: " + str(exc),
+                    last_error=str(exc),
                 )
                 session_control.finish(self.request_id, "failed")
             return False
@@ -367,14 +369,14 @@ class SessionSetup:
                 )
             self.publish(
                 "preparing",
-                "Preparing the new benchmark suites on this machine. Offline reference and negative-control checks are running.",
+                "Checking benchmark eligibility on this machine. Offline reference and negative-control checks are running.",
                 log=str(log),
             )
             return True
         if not db.state(session_control.KEY, {}).get("run_smoke"):
             self.publish(
                 "ready",
-                "Fixtures validated. All benchmark suites are available. Choose a profile and model to start benchmarking.",
+                "Eligibility checks passed. All benchmark suites are available. Choose a profile and model to start benchmarking.",
                 suites={s: {"phase": "ready", "available": True} for s in SUITES},
             )
             session_control.finish(self.request_id, "ready")

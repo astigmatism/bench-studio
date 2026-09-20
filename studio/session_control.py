@@ -52,7 +52,7 @@ def cancel_runs(c):
             run.update(
                 status="cancelled",
                 finished_at=now(),
-                progress="Suite setup stopped before execution",
+                progress="Eligibility check stopped before execution",
             )
         else:
             run["cancel_requested"] = True
@@ -125,5 +125,5 @@ def require_active(c, request_id):
         or current.get("revision") != config.REVISION
     ):
         raise ValueError(
-            "Suite setup was stopped or interrupted; select Start setup to run it again"
+            "Eligibility checking was stopped or interrupted; select Check eligibility to run it again"
         )
