@@ -26,7 +26,7 @@ from .session_catalog import (
 )
 
 SUITES = ("coding-sessions", "vision-checks", "visual-design")
-PAUSED_DETAIL = "Suite setup is idle. Select Start setup to validate fixtures and run model smoke tests. Updates and restarts do not start checks. Existing benchmark profiles remain available."
+PAUSED_DETAIL = "Select Start setup to validate the benchmark projects and tests. This preparation does not use the model. Model smoke tests are optional and do not unlock profiles. Updates and restarts do not start checks."
 
 
 def controls(state):
@@ -47,7 +47,7 @@ def controls(state):
         )
     elif not active and state.get("phase") == "needs_attention":
         state["detail"] += (
-            " Setup has stopped; select Start setup to retry the suites that have not passed."
+            " Setup has stopped. Model results are retained; use Run again to retry a specific smoke test."
         )
     elif not active and state.get("phase") != "ready":
         detail = (
@@ -61,11 +61,12 @@ def controls(state):
 
 def qualification_summary(suites):
     phases = {s["phase"] for s in suites.values()}
-    if phases == {"ready"}:
-        return "ready", "Benchmark suites are ready."
-    count = sum(s["phase"] == "ready" for s in suites.values())
-    prefix = f"Offline preparation passed. {count} of {len(suites)} new suites ready. "
-    suffix = " Each suite unlocks after a passing smoke run. Existing benchmark profiles remain available."
+    prefix = "Fixtures validated. All benchmark suites are available. "
+    if phases & (db.ACTIVE | db.WAITING | {"queued"}):
+        return (
+            "qualifying",
+            prefix + "Optional model smoke tests are running or queued, one at a time.",
+        )
     if phases & {
         "failed",
         "interrupted",
@@ -76,25 +77,38 @@ def qualification_summary(suites):
         "missing_run",
     }:
         return (
-            "needs_attention",
+            "ready",
             prefix
-            + "Some smoke runs need attention; open their results for details and retry when resolved."
-            + suffix,
+            + "Some model smoke tests did not pass. Their results are retained; this does not prevent benchmarking.",
         )
-    if phases & (db.ACTIVE | db.WAITING):
-        return "qualifying", prefix + "Live smoke tests run one at a time." + suffix
-    return (
-        "waiting",
-        prefix + "Smoke tests are queued or waiting for an available model." + suffix,
-    )
+    if "waiting_for_model" in phases:
+        return (
+            "waiting",
+            prefix
+            + "Optional smoke tests are waiting for an available model. You can stop them and launch your own benchmarks.",
+        )
+    return "ready", prefix + "Choose a profile and model to start benchmarking."
 
 
 def status():
     """Present current qualification progress without scheduling or inference."""
     path = config.DATA / "session-setup.json"
-    if not path.exists():
-        return controls({"phase": "paused", "detail": PAUSED_DETAIL, "suites": {}})
-    state = read_json(path)
+    state = (
+        read_json(path)
+        if path.exists()
+        else {"phase": "paused", "detail": PAUSED_DETAIL, "suites": {}}
+    )
+    if state.get("phase") == "preparing" and state.get("owner"):
+        progress_path = (
+            config.DATA / "session-validation" / state["owner"] / "progress.json"
+        )
+        if progress_path.exists():
+            progress = read_json(progress_path)
+            state["preparation_progress"] = progress
+            state["detail"] = (
+                f"Preparing benchmark fixtures: {progress['completed']} of {progress['total']} checks validated. "
+                f"Last check: {progress['last_check']}. No model or GPU work is required."
+            )
     if state.get("phase") not in {
         "ready",
         "qualifying",
@@ -106,22 +120,31 @@ def status():
         return controls(state)
     evidence = receipt()
     suites = {}
-    for suite, saved in state.get("suites", {}).items():
+    for suite in SUITES:
+        saved = state.get("suites", {}).get(suite, {})
         readiness_state = readiness(suite, evidence=evidence, setup=state)
         if not readiness_state["prepared"]:
             state.update(
                 phase="waiting_for_preparation",
-                detail="The preparation receipt no longer matches this deployment. Waiting for the controller to validate fixtures before qualification.",
+                detail="The preparation receipt no longer matches this deployment. Fixture validation is required before benchmarking.",
                 suites={},
             )
             return controls(state)
-        if readiness_state["ready"]:
+        qualified = evidence["suites"][suite].get("qualified_run")
+        if qualified and (not saved.get("run_id") or saved["run_id"] == qualified):
             suites[suite] = {
-                "phase": "ready",
-                "run_id": evidence["suites"][suite]["qualified_run"],
+                "phase": "passed",
+                "run_id": qualified,
             }
-        else:
+        elif saved.get("run_id"):
             suites[suite] = qualification_state(saved)
+        elif saved.get("phase") == "waiting_for_model" and db.state(
+            session_control.KEY, {}
+        ).get("active"):
+            suites[suite] = saved
+        else:
+            suites[suite] = {"phase": "ready"}
+        suites[suite]["available"] = True
     if suites:
         phase, detail = qualification_summary(suites)
         state.update(phase=phase, detail=detail, suites=suites)
@@ -141,6 +164,7 @@ class SessionSetup:
         self.state = {"revision": config.REVISION, "owner": self.owner}
         path = config.DATA / "session-setup.json"
         self.previous = read_json(path) if path.exists() else {}
+        self.state = {**self.previous, **self.state}
 
     def inspect_image(self):
         if self.image is None:
@@ -347,6 +371,14 @@ class SessionSetup:
                 log=str(log),
             )
             return True
+        if not db.state(session_control.KEY, {}).get("run_smoke"):
+            self.publish(
+                "ready",
+                "Fixtures validated. All benchmark suites are available. Choose a profile and model to start benchmarking.",
+                suites={s: {"phase": "ready", "available": True} for s in SUITES},
+            )
+            session_control.finish(self.request_id, "ready")
+            return False
         return self.qualify(evidence)
 
     def qualify(self, evidence):
@@ -355,12 +387,6 @@ class SessionSetup:
 
         suites = {}
         for suite in SUITES:
-            if readiness(suite)["ready"]:
-                suites[suite] = {
-                    "phase": "ready",
-                    "run_id": evidence["suites"][suite].get("qualified_run"),
-                }
-                continue
             matches = [
                 m
                 for m in db.runs()
@@ -433,7 +459,7 @@ class SessionSetup:
                         qualification=True,
                         setup_request_id=self.request_id,
                         idempotency_key="setup-qualification-" + key,
-                        note="User-requested qualification: one representative task; not a model ranking.",
+                        note="Optional model smoke test: one representative task. Its outcome does not gate benchmark availability.",
                     )
                 )
             except Exception as exc:
@@ -443,11 +469,13 @@ class SessionSetup:
                 }
                 continue
             suites[suite] = {"phase": "queued", "run_id": run["id"]}
+        for state in suites.values():
+            state["available"] = True
         phase, detail = qualification_summary(suites)
         self.publish(phase, detail, suites=suites)
         if all(
             s["phase"]
-            in db.TERMINAL | {"ready", "blocked", "not_passed", "missing_run"}
+            in db.TERMINAL | {"ready", "passed", "blocked", "not_passed", "missing_run"}
             for s in suites.values()
         ):
             session_control.finish(self.request_id, phase)

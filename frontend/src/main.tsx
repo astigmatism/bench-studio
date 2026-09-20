@@ -167,6 +167,7 @@ function App() {
     [rerun, setRerun] = useState<Obj | null>(null),
     [connection, setConnection] = useState(true),
     [setupBusy, setSetupBusy] = useState<"start" | "stop" | null>(null),
+    [setupSmoke, setSetupSmoke] = useState(false),
     [refresh, setRefresh] = useState(0);
   const setupSubmission = useRef<string | null>(null);
   const load = useCallback(async () => {
@@ -243,7 +244,10 @@ function App() {
     if (confirm(`Stop ${runName(r)}? Partial results will be retained.`))
       await mutate(`/runs/${r.id}/cancel`);
   };
-  const setupAction = async (action: "start" | "stop") => {
+  const setupAction = async (
+    action: "start" | "stop",
+    runSmoke = setupSmoke,
+  ) => {
     if (setupBusy) return;
     setSetupBusy(action);
     setError("");
@@ -256,7 +260,9 @@ function App() {
         ).join("");
       const response = await api(
         `/session-setup/${action}`,
-        action === "start" ? { idempotency_key: setupSubmission.current } : {},
+        action === "start"
+          ? { idempotency_key: setupSubmission.current, run_smoke: runSmoke }
+          : {},
       );
       setupSubmission.current = null;
       const message =
@@ -326,27 +332,56 @@ function App() {
         </div>
       </header>
       <main className="bs-main">
-        {health.session_setup && health.session_setup.phase !== "ready" && (
+        {health.session_setup && (
           <div
             role="status"
             aria-label="Benchmark suite setup"
-            className="bs-alert bs-setup"
+            className={`bs-alert bs-setup${health.session_setup.phase === "ready" ? " bs-setup-ready" : ""}`}
           >
             <div>
-              <strong>Benchmark suite setup: </strong>
+              <strong>
+                {health.session_setup.phase === "ready"
+                  ? "Benchmark suites available: "
+                  : "Benchmark suite setup: "}
+              </strong>
               {health.session_setup.detail}
             </div>
             {(health.session_setup.can_start ||
               health.session_setup.can_stop) && (
               <div className="bs-setup-suite">
                 {health.session_setup.can_start && (
-                  <button
-                    className="bs-button"
-                    disabled={!!setupBusy}
-                    onClick={() => setupAction("start")}
-                  >
-                    {setupBusy === "start" ? "Starting setup…" : "Start setup"}
-                  </button>
+                  <>
+                    {health.session_setup.phase !== "ready" && (
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={setupSmoke}
+                          disabled={!!setupBusy}
+                          onChange={(event) => {
+                            setSetupSmoke(event.target.checked);
+                            setupSubmission.current = null;
+                          }}
+                        />
+                        Also run model smoke tests (optional; uses the model)
+                      </label>
+                    )}
+                    <button
+                      className="bs-button"
+                      disabled={!!setupBusy}
+                      onClick={() =>
+                        setupAction(
+                          "start",
+                          health.session_setup.phase === "ready" || setupSmoke,
+                        )
+                      }
+                    >
+                      {setupBusy === "start"
+                        ? "Starting setup…"
+                        : health.session_setup.phase === "ready"
+                          ? "Run optional model checks"
+                          : "Start setup"}
+                    </button>
+                  </>
                 )}
                 {health.session_setup.can_stop && (
                   <button
@@ -368,11 +403,29 @@ function App() {
                   <div key={suite} className="bs-setup-suite">
                     <div>
                       <strong>
-                        {name}: {label(state.phase.replaceAll("_", " "))}
+                        {name}:{" "}
+                        {state.available
+                          ? "Available"
+                          : label(state.phase.replaceAll("_", " "))}
                       </strong>
+                      {state.available && state.phase !== "ready" && (
+                        <span>
+                          {" "}
+                          · Model smoke test:{" "}
+                          {label(state.phase.replaceAll("_", " "))}
+                        </span>
+                      )}
                       {state.detail && <span> · {state.detail}</span>}
                       {typeof state.turns === "number" && (
                         <span> · {state.turns} model turns</span>
+                      )}
+                      {state.generation?.active && (
+                        <span>
+                          {" "}
+                          · Receiving response (
+                          {state.generation.characters_received.toLocaleString()}{" "}
+                          characters)
+                        </span>
                       )}
                     </div>
                     {state.run_id && (

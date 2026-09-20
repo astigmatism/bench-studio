@@ -48,7 +48,7 @@ def setup_state(tmp_path, monkeypatch):
         "studio.session_setup.subprocess.check_output",
         lambda *a, **k: "sha256:prepared\n",
     )
-    session_control.start("test-explicit-start")
+    session_control.start("test-explicit-start", run_smoke=True)
     return evidence
 
 
@@ -64,7 +64,7 @@ def test_requested_qualification_is_durable_sequential_and_not_replayed(setup_st
         and r["profile_spec"]["review_mode"] == "unattended"
         for r in runs
     )
-    assert not any(session_catalog.readiness(s)["ready"] for s in SUITES)
+    assert all(session_catalog.readiness(s)["ready"] for s in SUITES)
     setup.next_check = 0
     setup.tick()
     assert len(db.runs()) == 3
@@ -76,13 +76,52 @@ def test_requested_qualification_is_durable_sequential_and_not_replayed(setup_st
     assert len(db.runs()) == 3
     state = json.loads((config.DATA / "session-setup.json").read_text())
     assert all(s["phase"] == "failed" for s in state["suites"].values())
-    assert state["phase"] == "needs_attention"
+    assert state["phase"] == "ready"
     # Completing the control request must not hide failures behind "setup idle".
     with TestClient(app) as client:
         health = client.get("/api/health").json()["session_setup"]
-    assert health["phase"] == "needs_attention"
+    assert health["phase"] == "ready"
     assert health["can_start"] and not health["can_stop"]
-    assert "Setup has stopped" in health["detail"]
+    assert "does not prevent benchmarking" in health["detail"]
+    # Failures in setup must not prevent launching a measured model comparison.
+    with TestClient(app) as client:
+        for suite in SUITES:
+            response = client.post(
+                "/api/runs",
+                json={
+                    "profile": suite,
+                    "targets": ["daytime"],
+                    "idempotency_key": "normal-after-failure-" + suite,
+                },
+            )
+            assert response.status_code == 202, response.text
+            assert not response.json()["profile_spec"].get("qualification")
+
+
+def test_default_setup_is_offline_and_suites_survive_restart_without_model_pass(
+    setup_state, monkeypatch
+):
+    session_control.stop()
+
+    def no_discovery():
+        raise AssertionError("Default preparation must not request a model")
+
+    monkeypatch.setattr(discovery, "discover", no_discovery)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/session-setup/start", json={"idempotency_key": "offline-only-start"}
+        )
+        assert response.status_code == 202 and response.json()["run_smoke"] is False
+        setup = SessionSetup()
+        setup.tick()
+        assert not db.runs() and not db.state(session_control.KEY)["active"]
+        assert client.get("/api/health").json()["session_setup"]["phase"] == "ready"
+        SessionSetup().tick()
+        health = client.get("/api/health").json()["session_setup"]
+        assert health["phase"] == "ready"
+        assert all(s["available"] for s in health["suites"].values())
+        assert all(session_catalog.readiness(s)["ready"] for s in SUITES)
+        assert not db.runs()
 
 
 def test_failed_smoke_exposes_budget_and_verification_evidence(setup_state):
@@ -137,7 +176,7 @@ def test_startup_and_legacy_auto_setting_do_not_start_checks(setup_state, monkey
 def test_start_stop_api_is_idempotent_and_only_cancels_setup_jobs(setup_state):
     db.set_state(session_control.KEY, {})
     with TestClient(app) as client:
-        body = {"idempotency_key": "explicit-start-1"}
+        body = {"idempotency_key": "explicit-start-1", "run_smoke": True}
         first = client.post("/api/session-setup/start", json=body).json()
         assert client.post("/api/session-setup/start", json=body).json() == first
         assert client.get("/api/health").json()["session_setup"]["phase"] == "requested"
@@ -156,7 +195,8 @@ def test_start_stop_api_is_idempotent_and_only_cancels_setup_jobs(setup_state):
         assert len(db.runs()) == 4
         assert not client.post("/api/session-setup/start", json=body).json()["active"]
         second = client.post(
-            "/api/session-setup/start", json={"idempotency_key": "explicit-start-2"}
+            "/api/session-setup/start",
+            json={"idempotency_key": "explicit-start-2", "run_smoke": True},
         ).json()
         assert second["active"] and second["id"] != first["id"]
         SessionSetup().tick()
@@ -194,6 +234,36 @@ def test_stop_preparation_releases_update_lock_and_never_resumes_on_restart(
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     assert not SessionSetup().tick()
     assert calls.count("spawn") == 1 and not db.runs()
+
+
+def test_preparation_progress_survives_browser_reconnection(setup_state):
+    (config.DATA / "session-preparation.json").unlink()
+    control = db.state(session_control.KEY)
+    saved = {
+        "phase": "preparing",
+        "owner": "setup-progress-test",
+        "request_id": control["id"],
+        "revision": config.REVISION,
+        "detail": "Preparing",
+        "suites": {},
+    }
+    atomic_json(config.DATA / "session-setup.json", saved)
+    atomic_json(
+        config.DATA / "session-validation/setup-progress-test/progress.json",
+        {
+            "completed": 13,
+            "total": 62,
+            "last_check": "coding-sessions / issues-small / reference-two-resets",
+        },
+    )
+    with TestClient(app) as client:
+        for _ in range(2):
+            state = client.get("/api/health").json()["session_setup"]
+            assert "13 of 62 checks validated" in state["detail"]
+            assert "No model or GPU work" in state["detail"]
+            assert state["preparation_progress"]["completed"] == 13
+            assert state["can_stop"]
+    assert not db.runs()
 
 
 @pytest.mark.parametrize("change_revision", [False, True])
@@ -256,10 +326,10 @@ def test_stop_racing_qualification_launch_cannot_leave_queued_work(
     "run_status,phase,overall,detail",
     [
         ("running", "running", "qualifying", "issues-small-r1 · implementation"),
-        ("queued", "queued", "waiting", "Router has existing active/queued work"),
-        ("blocked", "blocked", "needs_attention", "Runtime configuration changed"),
-        ("failed", "failed", "needs_attention", "Request stream interrupted"),
-        ("completed", "not_passed", "needs_attention", "without passing qualification"),
+        ("queued", "queued", "qualifying", "Router has existing active/queued work"),
+        ("blocked", "blocked", "qualifying", "Runtime configuration changed"),
+        ("failed", "failed", "qualifying", "Request stream interrupted"),
+        ("completed", "not_passed", "qualifying", "without passing qualification"),
     ],
 )
 def test_health_and_profile_read_live_progress_without_setup_tick(
@@ -283,8 +353,9 @@ def test_health_and_profile_read_live_progress_without_setup_tick(
     assert suite["phase"] == phase and suite["turns"] == 12
     assert detail in suite["detail"]
     readiness = next(p for p in profiles if p["id"] == "coding-sessions")["preparation"]
-    assert not readiness["ready"] and readiness["prepared"]
-    assert detail in readiness["reason"]
+    assert readiness["ready"] and readiness["prepared"]
+    assert readiness["reason"] is None
+    assert suite["available"]
     assert path.read_bytes() == original
     assert len(db.runs()) == 3
 
@@ -302,19 +373,21 @@ def test_qualified_suite_unlock_is_visible_while_other_suite_runs(setup_state):
     with TestClient(app) as client:
         state = client.get("/api/health").json()["session_setup"]
     assert state["phase"] == "qualifying"
-    assert "1 of 3 new suites ready" in state["detail"]
-    assert state["suites"]["coding-sessions"]["phase"] == "ready"
+    assert "All benchmark suites are available" in state["detail"]
+    assert state["suites"]["coding-sessions"]["phase"] == "passed"
     assert state["suites"]["visual-design"]["phase"] == "running"
 
 
-def test_existing_qualified_receipt_skips_preparation_and_smoke(setup_state):
+def test_existing_qualified_receipt_can_be_rechecked_explicitly(setup_state):
     for suite in setup_state["suites"].values():
         suite["qualified_run"] = "prior-success"
     atomic_json(config.DATA / "session-preparation.json", setup_state)
     assert SessionSetup().tick() is False
-    assert not db.runs()
+    assert len(db.runs()) == 3
     with TestClient(app) as client:
-        assert client.get("/api/health").json()["session_setup"]["phase"] == "ready"
+        assert (
+            client.get("/api/health").json()["session_setup"]["phase"] == "qualifying"
+        )
 
 
 def test_stale_preparation_does_not_report_ready_or_smoke_failure(setup_state):
@@ -322,6 +395,7 @@ def test_stale_preparation_does_not_report_ready_or_smoke_failure(setup_state):
         suite["qualified_run"] = "prior-success"
     atomic_json(config.DATA / "session-preparation.json", setup_state)
     SessionSetup().tick()
+    session_control.stop()
     setup_state["source_hash"] = "changed"
     atomic_json(config.DATA / "session-preparation.json", setup_state)
     with TestClient(app) as client:

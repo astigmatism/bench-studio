@@ -165,7 +165,9 @@ test("setup only starts on click and stop persists across browser reloads", asyn
     (r) => r.url().endsWith("/session-setup/start") && r.method() === "POST",
   );
   await page.getByRole("button", { name: "Start setup", exact: true }).click();
-  expect((await start).postDataJSON().idempotency_key).toBeTruthy();
+  const preparationRequest = (await start).postDataJSON();
+  expect(preparationRequest.idempotency_key).toBeTruthy();
+  expect(preparationRequest.run_smoke).toBe(false);
   await expect(
     page.getByText("Setup request accepted.", { exact: true }),
   ).toBeVisible();
@@ -199,6 +201,67 @@ test("setup only starts on click and stop persists across browser reloads", asyn
     path: "test-results/setup-manual-mobile.png",
     fullPage: true,
   });
+});
+
+test("model smoke tests require an explicit choice", async ({ page }) => {
+  await setup(page, base, {
+    phase: "paused",
+    detail: "Prepare benchmark fixtures.",
+    can_start: true,
+  });
+  const option = page.getByLabel(
+    "Also run model smoke tests (optional; uses the model)",
+  );
+  await expect(option).not.toBeChecked();
+  await option.check();
+  const request = page.waitForRequest(
+    (r) => r.url().endsWith("/session-setup/start") && r.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Start setup", exact: true }).click();
+  expect((await request).postDataJSON().run_smoke).toBe(true);
+});
+
+test("failed model smoke leaves prepared profiles launchable after reload", async ({
+  page,
+}) => {
+  await setup(page, base, {
+    phase: "ready",
+    detail:
+      "Fixtures validated. All benchmark suites are available. Some model smoke tests did not pass.",
+    can_start: true,
+    can_stop: false,
+    suites: {
+      "coding-sessions": {
+        available: true,
+        phase: "failed",
+        detail: "No usable answer after three generation attempts",
+        run_id: base.id,
+      },
+    },
+  });
+  await page.reload();
+  const banner = page.getByRole("status", { name: "Benchmark suite setup" });
+  await expect(banner).toContainText("Coding sessions: Available");
+  await expect(banner).toContainText("Model smoke test: Failed");
+  await expect(
+    banner.getByRole("button", { name: "Run optional model checks" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "New benchmark", exact: true })
+    .click();
+  await page
+    .getByLabel("Profile", { exact: true })
+    .selectOption("coding-sessions");
+  await expect(
+    page.getByRole("button", { name: "Queue benchmark", exact: true }),
+  ).toBeEnabled();
+  const request = page.waitForRequest(
+    (r) => r.url().endsWith("/api/runs") && r.method() === "POST",
+  );
+  await page
+    .getByRole("button", { name: "Queue benchmark", exact: true })
+    .click();
+  expect((await request).postDataJSON().qualification).not.toBe(true);
 });
 
 test("setup shows pending feedback and server failures", async ({ page }) => {
@@ -535,6 +598,7 @@ test("setup shows each suite's phase and opens the active smoke run", async ({
         run_id: run.id,
         detail: "issues-small-r1 · implementation",
         turns: 12,
+        generation: { active: true, characters_received: 3142 },
       },
       "vision-checks": { phase: "ready" },
       "visual-design": {
@@ -545,6 +609,7 @@ test("setup shows each suite's phase and opens the active smoke run", async ({
   });
   const banner = page.getByRole("status", { name: "Benchmark suite setup" });
   await expect(banner).toContainText("Coding sessions: Running");
+  await expect(banner).toContainText("Receiving response (3,142 characters)");
   await expect(banner).toContainText(
     "issues-small-r1 · implementation · 12 model turns",
   );
@@ -570,23 +635,41 @@ test("setup shows each suite's phase and opens the active smoke run", async ({
   ).toBeVisible();
 });
 
-test("finished setup retains failure evidence after reload", async ({ page }) => {
+test("finished setup retains failure evidence after reload", async ({
+  page,
+}) => {
   await setup(page, base, {
     phase: "needs_attention",
-    detail: "Offline preparation passed. 1 of 3 new suites ready. Setup has stopped; select Start setup to retry the suites that have not passed.",
+    detail:
+      "Offline preparation passed. 1 of 3 new suites ready. Setup has stopped; select Start setup to retry the suites that have not passed.",
     can_start: true,
     can_stop: false,
     suites: {
-      "coding-sessions": { phase: "failed", detail: "Command timed out after 120 seconds", run_id: base.id },
+      "coding-sessions": {
+        phase: "failed",
+        detail: "Command timed out after 120 seconds",
+        run_id: base.id,
+      },
       "vision-checks": { phase: "ready" },
-      "visual-design": { phase: "not_passed", detail: "Active-time limit exhausted · 30.0 active minutes · 0 verification attempts. Open the run for evidence.", run_id: base.id },
+      "visual-design": {
+        phase: "not_passed",
+        detail:
+          "Active-time limit exhausted · 30.0 active minutes · 0 verification attempts. Open the run for evidence.",
+        run_id: base.id,
+      },
     },
   });
   await page.reload();
   const banner = page.getByRole("status", { name: "Benchmark suite setup" });
   await expect(banner).toContainText("Setup has stopped");
-  await expect(banner).toContainText("30.0 active minutes · 0 verification attempts");
+  await expect(banner).toContainText(
+    "30.0 active minutes · 0 verification attempts",
+  );
   await expect(banner).toContainText("Vision checks: Ready");
-  await expect(banner.getByRole("button", { name: "Start setup", exact: true })).toBeVisible();
-  await expect(banner.getByRole("button", { name: "Stop setup", exact: true })).toHaveCount(0);
+  await expect(
+    banner.getByRole("button", { name: "Start setup", exact: true }),
+  ).toBeVisible();
+  await expect(
+    banner.getByRole("button", { name: "Stop setup", exact: true }),
+  ).toHaveCount(0);
 });

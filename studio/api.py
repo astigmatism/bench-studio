@@ -1,20 +1,15 @@
 import asyncio
 import contextlib
-import hashlib
 import json
-import os
-import re
-import time
 import uuid
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
-from common import now, atomic_json, read_json
+from common import now
 from . import config, db, discovery, profiles, results
 
 
@@ -70,6 +65,7 @@ class Launch(BaseModel):
 
 class SetupStart(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=100)
+    run_smoke: bool = False
 
 
 class Custom(BaseModel):
@@ -139,7 +135,7 @@ def models():
 def start_session_setup(body: SetupStart):
     from . import session_control
 
-    return session_control.start(body.idempotency_key)
+    return session_control.start(body.idempotency_key, run_smoke=body.run_smoke)
 
 
 @app.post("/api/session-setup/stop", status_code=202)

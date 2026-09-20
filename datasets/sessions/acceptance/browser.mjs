@@ -15,6 +15,7 @@ if(task==='issues-small'){
  // Test the behavior without prescribing a dropdown for the visual design.
  const label=/^Status(?: filter)?$/i;
  const select=page.getByRole('combobox',{name:label});
+ const filterOpen=async()=>{
  if(await select.count()===1) await select.selectOption({label:'Open'});
  else {
   const group=page.getByRole('group',{name:label}).or(page.getByRole('radiogroup',{name:label})).or(page.getByRole('tablist',{name:label}));
@@ -22,16 +23,33 @@ if(task==='issues-small'){
   if(await radio.count()===1) await radio.check();
   else await group.getByRole('button',{name:'Open',exact:true}).or(group.getByRole('tab',{name:'Open',exact:true})).click();
  }
+ };
+ await filterOpen();
  await page.getByLabel('Search',{exact:true}).fill('LOGIN');
  await page.getByText('Fix login',{exact:true}).waitFor();
  assert(/\b1\b/.test(await text()),'visible count for one issue');
  assert(!(await text()).includes('Refresh docs'),'status filter failed');
  assert(!(await text()).includes('Add export'),'combined search failed');
- await page.getByLabel('Search',{exact:true}).fill('zzzz-does-not-exist');
- await page.getByText('No matching issues',{exact:true}).waitFor();
- assert(/\b0\b/.test(await text()),'visible count for zero issues');
- await page.getByRole('button',{name:'Reset filters',exact:true}).click();
- await page.getByText('Refresh docs',{exact:true}).waitFor();
+ // Repeated reset controls are valid (toolbar plus empty state). Exercise
+ // every visible one rather than imposing a unique accessible name.
+ const empty=async()=>{
+  await filterOpen();
+  await page.getByLabel('Search',{exact:true}).fill('zzzz-does-not-exist');
+  await page.getByText('No matching issues',{exact:true}).waitFor();
+  assert(/\b0\b/.test(await text()),'visible count for zero issues');
+ };
+ await empty();
+ const resets=page.getByRole('button',{name:'Reset filters',exact:true});
+ const resetCount=await resets.count();
+ assert(resetCount>0,'empty state needs a Reset filters button');
+ for(let i=0;i<resetCount;i++){
+  if(i)await empty();
+  await resets.nth(i).click();
+  await page.getByText('Refresh docs',{exact:true}).waitFor();
+  await page.getByText('Fix login',{exact:true}).waitFor();
+  await page.getByText('Add export',{exact:true}).waitFor();
+  assert(await page.getByLabel('Search',{exact:true}).inputValue()==='','reset clears search');
+ }
 }else if(task==='inventory-small'){
  await page.getByLabel('Sort by').selectOption('Stock ascending');
  assert((await page.locator('tbody tr').first().innerText()).includes('Adapters'),'ascending');

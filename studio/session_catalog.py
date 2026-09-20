@@ -11,7 +11,7 @@ from . import config
 FAMILIES = {"session", "vision"}
 TIERS = {"small": (1800, 100), "medium": (5400, 300), "large": (14400, 800)}
 PROTOCOL_VERSION = 1
-EXECUTION_VERSION = 2
+EXECUTION_VERSION = 3
 ROOT = config.ROOT / "datasets" / "sessions"
 
 
@@ -142,6 +142,7 @@ def qualification_state(state):
         phase=phase,
         detail=detail,
         turns=progress.get("turns"),
+        generation=progress.get("generation") if phase in db.ACTIVE else None,
         started_at=run.get("started_at"),
         updated_at=run.get("updated_at"),
     )
@@ -162,10 +163,9 @@ def readiness(suite, *, evidence=None, setup=None):
             or setup["expected_image_id"] == evidence.get("image_id")
         )
     )
-    ready = prepared and bool(
-        evidence.get("suites", {}).get(suite, {}).get("qualified_run")
-    )
-    reason = "Select Start setup to validate this suite and run its qualification smoke test. No checks start automatically."
+    # Model outcomes are benchmark results, not installation requirements.
+    ready = prepared
+    reason = "Select Start setup to validate this suite's fixtures. Model smoke tests are optional; no checks start automatically."
     if setup:
         if setup.get("phase") in {
             "preparing",
@@ -175,18 +175,6 @@ def readiness(suite, *, evidence=None, setup=None):
             "requested",
         }:
             reason = setup["detail"]
-        elif prepared and not ready:
-            state = qualification_state(setup.get("suites", {}).get(suite, {}))
-            reason = (
-                "Live qualification "
-                + state.get("phase", "pending").replace("_", " ")
-                + (" · run " + state["run_id"] if state.get("run_id") else "")
-                + ". "
-                + (
-                    state.get("detail")
-                    or "This suite becomes available after its smoke run passes."
-                )
-            )
     return {
         "ready": bool(ready),
         "prepared": bool(prepared),
@@ -199,10 +187,9 @@ def attach(profile):
 
     suite = profile["suite"]
     evidence = receipt()
-    if not readiness(suite)["ready"] and not (
-        profile.get("qualification") and readiness(suite)["prepared"]
-    ):
-        raise ValueError(readiness(suite)["reason"])
+    availability = readiness(suite, evidence=evidence)
+    if not availability["ready"]:
+        raise ValueError(availability["reason"])
     selected = tasks(profile)
     profile.update(
         pinned_tasks=selected,
@@ -217,7 +204,7 @@ def attach(profile):
         engine=profile["engine"]
         if profile["family"] == "vision"
         else f"Harbor 0.23.0 / Studio session agent {EXECUTION_VERSION}",
-        acceptance_version=2,
+        acceptance_version=3,
         compaction_version=1,
         screenshot_renderer=catalog().get("screenshot_renderer")
         if suite == "vision-checks"

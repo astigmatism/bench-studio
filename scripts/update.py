@@ -212,7 +212,7 @@ def deploy():
                 raise
             print("Success: healthy Bench Studio " + revision, flush=True)
             print(
-                "No benchmark checks start automatically. Use Start setup in Bench Studio when you want to prepare and qualify new suites.",
+                "No benchmark checks start automatically. Use Start setup in Bench Studio to validate fixtures. Model smoke tests are optional and do not gate benchmarking.",
                 flush=True,
             )
         finally:

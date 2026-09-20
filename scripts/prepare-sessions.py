@@ -17,7 +17,7 @@ import signal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import now
+from common import now, atomic_json
 from studio import config
 from studio.session_catalog import (
     ROOT,
@@ -32,6 +32,21 @@ from studio.session_environment import verify_candidate
 
 def command(args, **kwargs):
     subprocess.run(args, check=True, **kwargs)
+
+
+def task_variants(task):
+    variants = ("base", "reference", "incomplete")
+    if task["id"] == "issues-small":
+        variants += (
+            "reference-short-status-label",
+            "reference-status-radio",
+            "reference-status-button",
+            "reference-status-tab",
+            "reference-main-role",
+            "reference-two-resets",
+            "broken-extra-reset",
+        )
+    return variants
 
 
 def ownership():
@@ -173,22 +188,32 @@ print(json.dumps(result))
         if args.suite == "all"
         else (() if args.suite == "vision-checks" else (args.suite,))
     )
+    total = len(selected) * sum(len(task_variants(task)) for task in catalog()["tasks"])
+    if args.suite in ("all", "vision-checks"):
+        total += len(catalog()["vision_checks"])
+    completed = 0
+
+    def progress(label):
+        nonlocal completed
+        completed += 1
+        if owner := os.environ.get("STUDIO_PREPARATION_OWNER"):
+            atomic_json(
+                config.DATA / "session-validation" / owner / "progress.json",
+                {
+                    "completed": completed,
+                    "total": total,
+                    "last_check": label,
+                    "updated_at": now(),
+                },
+            )
+
     for suite in selected:
         checks = []
         semaphore = asyncio.Semaphore(args.jobs)
 
         async def validate_task(task):
             async with semaphore:
-                variants = ("base", "reference", "incomplete")
-                if task["id"] == "issues-small":
-                    variants += (
-                        "reference-short-status-label",
-                        "reference-status-radio",
-                        "reference-status-button",
-                        "reference-status-tab",
-                        "reference-main-role",
-                    )
-                for variant in variants:
+                for variant in task_variants(task):
                     dest = validation / suite / task["id"] / variant
                     project = dest / "project"
                     shutil.copytree(ROOT / "base", project)
@@ -197,6 +222,23 @@ print(json.dumps(result))
                     )
                     if variant != "base":
                         reference.apply(project, task["id"])
+                    if variant in {"reference-two-resets", "broken-extra-reset"}:
+                        path = project / "frontend/src/App.tsx"
+                        source = path.read_text()
+                        marker = "<p>{visible.length} issues</p>"
+                        assert marker in source
+                        handler = (
+                            "()=>{setStatus('All');setSearch('')}"
+                            if variant.startswith("reference")
+                            else "()=>{}"
+                        )
+                        path.write_text(
+                            source.replace(
+                                marker,
+                                f"<button onClick={{{handler}}}>Reset filters</button>"
+                                + marker,
+                            )
+                        )
                     if variant == "reference-short-status-label":
                         path = project / "frontend/src/App.tsx"
                         path.write_text(
@@ -325,6 +367,7 @@ print(json.dumps(result))
                     checks.append(
                         {"task": task["id"], "variant": variant, "passed": True}
                     )
+                    progress(f"{suite} / {task['id']} / {variant}")
 
         async with asyncio.TaskGroup() as group:
             for task in catalog()["tasks"]:
@@ -344,6 +387,8 @@ print(json.dumps(result))
         if not task.get("answer") or path.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
             raise RuntimeError("Invalid vision fixture")
         images.append({"id": task["id"], "sha256": digest})
+        if args.suite in ("all", "vision-checks"):
+            progress("Vision fixture / " + task["id"])
     if args.suite in ("all", "vision-checks"):
         receipts["suites"]["vision-checks"] = {
             **receipts["suites"].get("vision-checks", {}),
@@ -356,7 +401,7 @@ print(json.dumps(result))
         )
     save_preparation(receipts)
     print(
-        "Offline reference validation complete. Runtime qualification is still required."
+        "Offline reference validation complete. Suites are available; model smoke checks are optional."
     )
 
 

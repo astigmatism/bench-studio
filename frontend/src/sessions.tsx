@@ -341,6 +341,15 @@ export function SessionDetail({
           <p>
             {phase.attempt_id} · {title(finished ? run.status : phase.phase)} ·{" "}
             {phase.turns ?? 0} model turns
+            {!finished && phase.generation?.active && (
+              <span>
+                {" "}
+                ·{" "}
+                {phase.generation.characters_received
+                  ? `Receiving response (${phase.generation.characters_received.toLocaleString()} characters)`
+                  : "Waiting for model response"}
+              </span>
+            )}
           </p>
           {run.queue_seconds != null && (
             <p className="bs-small">

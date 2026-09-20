@@ -675,6 +675,11 @@
 #app .bs-setup {
   display: block;
 }
+#app .bs-setup-ready {
+  background: var(--bs-surface);
+  color: var(--bs-muted);
+  border: 1px solid var(--bs-line);
+}
 #app .bs-setup-suite {
   display: flex;
   align-items: baseline;

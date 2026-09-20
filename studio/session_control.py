@@ -59,7 +59,7 @@ def cancel_runs(c):
         db.update_run(run, c=c)
 
 
-def start(key):
+def start(key, *, run_smoke=False):
     with db.transaction() as c:
         if (config.DATA / ".maintenance").exists():
             raise ValueError("Application update in progress")
@@ -76,6 +76,7 @@ def start(key):
             active=True,
             requested_at=now(),
             outcome="requested",
+            run_smoke=run_smoke,
         )
         save(c, current)
         return current

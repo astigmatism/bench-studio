@@ -8,7 +8,7 @@ from common import atomic_json, now
 from studio import config, db, profiles, results, session_catalog, session_reviews
 from studio.api import app
 from studio.session_core import Ledger, SessionCore
-from studio.router_stream import ContextBudgetError, completion
+from studio.router_stream import ContextBudgetError, EmptyResponseError, completion
 from studio.session_results import summarize_attempts, paired_comparison
 
 
@@ -95,18 +95,17 @@ def test_invalid_session_options(state, options):
         profiles.configure("coding-sessions", **options)
 
 
-def test_preparation_and_qualification_gate(state):
+def test_preparation_gates_fixtures_not_model_success(state):
     evidence = session_catalog.receipt()
     evidence["suites"]["coding-sessions"].pop("qualified_run")
     atomic_json(state / "session-preparation.json", evidence)
     assert session_catalog.readiness("coding-sessions") == {
-        "ready": False,
+        "ready": True,
         "prepared": True,
         "reason": session_catalog.readiness("coding-sessions")["reason"],
     }
     p = profiles.configure("coding-sessions")
-    with pytest.raises(ValueError):
-        profiles.attach_manifest(p)
+    assert profiles.attach_manifest(p)["session_image"] == "sha256:fixture"
     p["qualification"] = True
     assert profiles.attach_manifest(p)["session_image"] == "sha256:fixture"
     evidence["source_hash"] = "stale"
@@ -339,6 +338,100 @@ PLAN = {
     "checks": ["Regression", "Filter cases"],
 }
 FINISH = {"action": "finish", "commit_message": "Add issue filters"}
+
+
+@pytest.mark.parametrize("style", ["router", "empty_stop", "http"])
+def test_empty_generation_keeps_partial_evidence_without_executing_it(style):
+    error = {"code": "EMPTY_UPSTREAM_RESPONSE", "message": "No visible answer"}
+    packets = [
+        {"choices": [{"delta": {"reasoning_content": "Working"}}]},
+        {
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 40, "completion_tokens": 10},
+        },
+    ]
+    if style == "router":
+        packets.append({"error": error})
+    body = (
+        "".join("data: " + json.dumps(p) + "\n\n" for p in packets) + "data: [DONE]\n\n"
+    )
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(502, json={"error": error})
+        if style == "http"
+        else httpx.Response(200, text=body)
+    )
+    with pytest.raises(EmptyResponseError) as raised:
+        asyncio.run(completion("http://model/v1", {}, transport=transport))
+    evidence = raised.value.evidence
+    assert evidence["content"] == ""
+    assert evidence["elapsed_seconds"] >= 0
+    if style != "http":
+        assert evidence["usage"]["completion_tokens"] == 10
+        assert evidence["reasoning_content"] == "Working"
+        assert evidence["ttft_ms"] is not None
+    else:
+        assert evidence["usage"] is None
+
+
+def test_empty_response_recovers_in_both_phases_and_counts_failed_requests(state):
+    empty = EmptyResponseError(
+        "EMPTY_UPSTREAM_RESPONSE", {"usage": None, "reasoning_content": "unfinished"}
+    )
+    core, env, sent, _ = core_fixture(state, [empty, PLAN, empty, FINISH])
+    progress = []
+    core.progress = progress.append
+    row = asyncio.run(core.run())
+    assert row["status"] == "passed" and row["verification_attempts"] == 1
+    assert row["turns"] == 4 and len(row["requests"]) == 4
+    assert row["active_seconds"] == 7
+    assert not env.actions  # Empty generations never dispatch an action.
+    assert "No action was executed" in sent[1]["messages"][-1]["content"]
+    assert len(sent[1]["messages"]) > len(sent[0]["messages"])
+    assert "No action was executed" in sent[3]["messages"][-1]["content"]
+    saved = json.loads((core.root / "response-0001.json").read_text())
+    assert saved["reasoning_content"] == "unfinished" and saved["usage"] is None
+    assert not summarize_attempts([row], core.profile, 1)["usage"]["complete"]
+    assert any(
+        p.get("generation", {}).get("active") and p["turns"] == 1 for p in progress
+    )
+    assert any(p["phase"] == "planning" and p["turns"] == 2 for p in progress)
+
+
+def test_repeated_empty_responses_are_bounded_failed_attempts(state):
+    core, env, sent, _ = core_fixture(state, [EmptyResponseError("No answer")] * 3)
+    row = asyncio.run(core.run())
+    assert row["status"] == "failed" and row["failure_kind"] == "incomplete_response"
+    assert "three generation attempts" in row["detail"]
+    assert row["turns"] == 3 and row["active_seconds"] == 3
+    assert not env.actions and row["verification_attempts"] == 0
+    assert summarize_attempts([row], core.profile, 1)["score"] == 0
+
+
+def test_empty_response_recovery_still_obeys_turn_budget(state):
+    core, env, sent, _ = core_fixture(state, [EmptyResponseError("No answer")] * 3)
+    core.params["max_turns"] = 2
+    row = asyncio.run(core.run())
+    assert row["failure_kind"] == "agent_budget" and row["turns"] == 2
+    assert len(sent) == 2 and not env.actions
+
+
+def test_empty_output_at_length_limit_is_not_retried(state):
+    core, _, sent, _ = core_fixture(
+        state, [EmptyResponseError("No answer", {"finish_reason": "length"})]
+    )
+    row = asyncio.run(core.run())
+    assert row["failure_kind"] == "output_limit" and row["turns"] == 1
+    assert len(sent) == 1
+
+
+def test_cancellation_during_generation_is_not_retried(state):
+    async def cancelled(*args):
+        raise asyncio.CancelledError()
+
+    core, _, _, _ = core_fixture(state, [], request_override=cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(core.run())
+    assert core.turns == 1 and len(core.requests) == 1
 
 
 def test_session_permissions_approval_and_verified_finish(state):
@@ -833,7 +926,7 @@ def test_session_execution_change_breaks_comparability(state):
     current = manifest(state)
     previous = copy.deepcopy(current)
     previous["profile_spec"]["execution_adapter_version"] = 1
-    assert current["profile_spec"]["execution_adapter_version"] == 2
+    assert current["profile_spec"]["execution_adapter_version"] == 3
     assert not results.comparable(previous, current)
 
 
@@ -921,7 +1014,7 @@ def test_malformed_transport_does_not_retry_as_an_agent_action(state):
     assert len(sent) == 1 and outcome["turns"] == 1
 
 
-def test_only_completed_smoke_enables_a_suite(state):
+def test_only_completed_smoke_is_recorded_as_a_pass(state):
     m = manifest(state, task_selection="issues-small", review_mode="unattended")
     m["profile_spec"]["qualification"] = True
     evidence = session_catalog.receipt()
@@ -932,7 +1025,10 @@ def test_only_completed_smoke_enables_a_suite(state):
         {"partial": False, "passed": 1},
     )
     session_catalog.qualify_run(m)
-    assert not session_catalog.readiness("coding-sessions")["ready"]
+    assert session_catalog.readiness("coding-sessions")["ready"]
+    assert not session_catalog.receipt()["suites"]["coding-sessions"].get(
+        "qualified_run"
+    )
     m["status"] = "completed"
     session_catalog.qualify_run(m)
     assert session_catalog.readiness("coding-sessions")["ready"]

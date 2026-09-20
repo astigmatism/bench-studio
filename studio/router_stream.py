@@ -1,11 +1,20 @@
 """Strict OpenAI-compatible SSE collection for trusted execution adapters."""
 
-import json, time
+import json
+import time
 import httpx
 
 
 class ContextBudgetError(RuntimeError):
     """The router rejected the input before generation because it cannot fit."""
+
+
+class EmptyResponseError(RuntimeError):
+    """Generation ended without an answer; partial evidence is not executable."""
+
+    def __init__(self, message, evidence=None):
+        super().__init__(message)
+        self.evidence = evidence or {}
 
 
 async def completion(endpoint, payload, *, transport=None, progress=None):
@@ -17,6 +26,19 @@ async def completion(endpoint, payload, *, transport=None, progress=None):
     done = False
     started = last = time.monotonic()
     first_token = None
+
+    def evidence():
+        return {
+            "content": "".join(content),
+            "reasoning_content": "".join(reasoning),
+            "usage": usage,
+            "finish_reason": finish,
+            "elapsed_seconds": time.monotonic() - started,
+            "ttft_ms": (first_token - started) * 1000
+            if first_token is not None
+            else None,
+        }
+
     async with httpx.AsyncClient(
         transport=transport, timeout=httpx.Timeout(600, connect=15)
     ) as client:
@@ -36,6 +58,11 @@ async def completion(endpoint, payload, *, transport=None, progress=None):
                     raise ContextBudgetError(
                         error.get("message", "Input context exhausted")
                     )
+                if (
+                    isinstance(error, dict)
+                    and error.get("code") == "EMPTY_UPSTREAM_RESPONSE"
+                ):
+                    raise EmptyResponseError("Router error: " + str(error), evidence())
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
@@ -45,6 +72,7 @@ async def completion(endpoint, payload, *, transport=None, progress=None):
                     done = True
                     break
                 chunk = json.loads(value)
+                usage = chunk.get("usage") or usage
                 if chunk.get("error"):
                     if (
                         isinstance(chunk["error"], dict)
@@ -54,8 +82,14 @@ async def completion(endpoint, payload, *, transport=None, progress=None):
                         raise ContextBudgetError(
                             chunk["error"].get("message", "Input context exhausted")
                         )
+                    if (
+                        isinstance(chunk["error"], dict)
+                        and chunk["error"].get("code") == "EMPTY_UPSTREAM_RESPONSE"
+                    ):
+                        raise EmptyResponseError(
+                            "Router error: " + str(chunk["error"]), evidence()
+                        )
                     raise RuntimeError("Router error: " + str(chunk["error"]))
-                usage = chunk.get("usage") or usage
                 for choice in chunk.get("choices", []):
                     finish = choice.get("finish_reason") or finish
                     delta = choice.get("delta", {})
@@ -70,6 +104,10 @@ async def completion(endpoint, payload, *, transport=None, progress=None):
                 if progress and time.monotonic() - last > 5:
                     progress(len("".join(content)) + len("".join(reasoning)))
                     last = time.monotonic()
+    if done and finish == "stop" and not "".join(content).strip():
+        raise EmptyResponseError(
+            "Backend completed without a visible answer", evidence()
+        )
     if (
         not done
         or finish not in ["stop", "length"]
@@ -80,11 +118,4 @@ async def completion(endpoint, payload, *, transport=None, progress=None):
         )
     ):
         raise RuntimeError("Incomplete router stream or missing real token usage")
-    return {
-        "content": "".join(content),
-        "reasoning_content": "".join(reasoning),
-        "usage": usage,
-        "finish_reason": finish,
-        "elapsed_seconds": time.monotonic() - started,
-        "ttft_ms": (first_token - started) * 1000 if first_token is not None else None,
-    }
+    return evidence()

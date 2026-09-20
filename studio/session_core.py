@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 from common import atomic_json, now
-from .router_stream import completion, ContextBudgetError
+from .router_stream import completion, ContextBudgetError, EmptyResponseError
 
 ACTIVE_PHASES = {
     "planning",
@@ -247,14 +247,34 @@ This is an application coding task. For optional browser interaction checks, Nod
         )
 
     async def generate(self, messages, *, tag="agent"):
+        for attempt in range(3):
+            try:
+                return await self.generate_once(messages, tag=tag)
+            except EmptyResponseError as exc:
+                if attempt == 2:
+                    raise EmptyResponseError(
+                        "No usable answer after three generation attempts: " + str(exc)
+                    ) from exc
+                # No action was dispatched. Correct the request instead of
+                # repeating a deterministic empty response verbatim.
+                messages = [
+                    *messages,
+                    {
+                        "role": "user",
+                        "content": "Your previous generation ended without a usable answer. No action was executed. Continue from the current task state and return the complete requested answer in the visible response. For an action or critique, use one complete JSON object; do not emit tool-call tags or reasoning alone.",
+                    },
+                ]
+
+    async def generate_once(self, messages, *, tag="agent"):
         prior = self.ledger.phase
-        self.ledger.switch("runtime_wait")
+        self.publish("runtime_wait")
         await self.ready()
         self.ledger.switch(prior)
         self.remaining()
         if self.turns >= self.params["max_turns"]:
             raise SessionBudgetError("Model-turn budget exhausted")
         self.turns += 1
+        self.publish(prior)
         resolved = self.manifest["resolved"][self.target]
         parameters = {
             k: self.params[k]
@@ -277,22 +297,72 @@ This is an application coding task. For optional browser interaction checks, Nod
             {"phase": prior, "kind": tag, "request": payload},
         )
         started = time.monotonic()
+
+        def stream_progress(characters):
+            self.progress(
+                {
+                    "target": self.target,
+                    "attempt_id": self.attempt_id,
+                    "phase": prior,
+                    "turns": self.turns,
+                    "timing": self.ledger.snapshot(),
+                    "generation": {
+                        "active": True,
+                        "characters_received": characters,
+                        "elapsed_seconds": time.monotonic() - started,
+                    },
+                }
+            )
+
+        stream_progress(0)
         try:
             result = await asyncio.wait_for(
-                self.request(self.manifest["settings"]["endpoint"], payload),
+                self.request(
+                    self.manifest["settings"]["endpoint"],
+                    payload,
+                    **(
+                        {"progress": stream_progress}
+                        if self.request is completion
+                        else {}
+                    ),
+                ),
                 timeout=self.remaining(),
             )
         except BaseException as exc:
+            saved = {
+                **(exc.evidence if isinstance(exc, EmptyResponseError) else {}),
+                "kind": tag,
+                "phase": prior,
+                "elapsed_seconds": time.monotonic() - started,
+                "error": str(exc),
+            }
             self.requests.append(
                 {
-                    "kind": tag,
-                    "phase": prior,
-                    "elapsed_seconds": time.monotonic() - started,
-                    "error": str(exc),
+                    k: v
+                    for k, v in saved.items()
+                    if k not in ("content", "reasoning_content")
                 }
             )
-            atomic_json(self.root / f"response-{index:04d}.json", self.requests[-1])
+            atomic_json(self.root / f"response-{index:04d}.json", saved)
+            if (
+                isinstance(exc, EmptyResponseError)
+                and exc.evidence.get("finish_reason") == "length"
+            ):
+                raise OutputBudgetError(
+                    "Per-request output budget exhausted without a visible answer"
+                ) from exc
             raise
+        finally:
+            self.progress(
+                {
+                    "target": self.target,
+                    "attempt_id": self.attempt_id,
+                    "phase": prior,
+                    "turns": self.turns,
+                    "generation": {"active": False},
+                    "timing": self.ledger.snapshot(),
+                }
+            )
         atomic_json(self.root / f"response-{index:04d}.json", result)
         self.requests.append(
             {
@@ -667,6 +737,9 @@ This is an application coding task. For optional browser interaction checks, Nod
             message = str(exc) or "Active-time limit exhausted"
         except InvalidActionError as exc:
             failure = "invalid_response"
+            message = str(exc)
+        except EmptyResponseError as exc:
+            failure = "incomplete_response"
             message = str(exc)
         except OutputBudgetError as exc:
             failure = "output_limit"
