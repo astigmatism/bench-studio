@@ -146,3 +146,16 @@ A blocked session/vision profile now has **Start setup** directly in its launch 
 Validation: **52 browser tests passed** across localhost and plain HTTP, including in-place setup completion, retained form values, explicit offline-only requests, failures, stop and mobile layout. The TypeScript/Vite production build passed with the existing bundle-size advisory. No backend code or benchmark fixture changed in this patch.
 
 Production recovery used the ordinary setup API with `run_smoke=false`. It finished successfully at **2026-09-20 05:39:09 UTC**: 25 coding controls, 25 visual controls and 12 vision-fixture checks passed. All three profile-readiness responses now report `ready=true` and `prepared=true`. The request created **zero benchmark runs**; its execution lock was released and no owned preparation containers remained. Model services and application images were not changed. Evidence: `data/setup-launch-recovery/verification.json`. The frontend change is delivered through the normal Git/Portal update workflow.
+
+## Performance-first results — 2026-09-21 UTC
+
+Completed results now lead with median client output speed, first-token time, optional backend prompt speed, and request latency. History and task/request breakdowns expose these metrics; per-metric ranks use matching workload content and canonical models, with changes against the previous matching run. Stream collectors retain optional native timing and client timing across benchmark families. Existing scoring formulas, baseline slots, historical artifacts, and grading behavior are retained.
+
+Validation:
+
+- Full Python suite: **346 passed, 3 skipped**. After final recording/ranking refinements, the focused measurement, Studio, session, repair, and integration suites passed **186 tests, 3 skipped**, including **32 performance cases**.
+- Browser validation: **64 passed** across localhost and plain HTTP (56 existing cases, six new completed/history/mobile cases, and two new active-progress cases). The active-progress test's initial selector was corrected from “Open run” to the existing “View run” label.
+- TypeScript and Vite production build passed with the existing bundle-size advisory. Ruff passes for new performance/telemetry modules and their tests, plus the modified streaming and Harbor adapters. Existing unused-import findings elsewhere are unchanged.
+- Read-only production evidence from run `20260921T014933Z-921d8ece` reproduces **28.0 tok/s**, **4.82 s** first token, and **9.07 s** request latency, using **50/51 requests**. Native prompt-processing timing is unavailable in this historical recording. A local browser preview using that production snapshot showed the scorecard before the timeline, matching history and task values, and **#1 of 1** ranks.
+- Service Portal delivery checks: **10 updater tests passed**, including preflight rejection, failed-build image restoration, and failed-health handling; the shell entry point passes syntax validation. The existing Docker build includes the new Python modules and frontend without dependency or schema changes.
+- No production benchmark, configuration change, deployment, or artifact rewrite was performed. Preview evidence is retained locally in ignored `data/performance-review/`.

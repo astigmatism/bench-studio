@@ -13,6 +13,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import atomic_json, read_json, now, resolve, snapshot, check_drift, wait_for_runtime
+from betterbench.telemetry import StreamTelemetry
 
 ROOT = Path("/app/datasets/cache")
 
@@ -90,46 +91,53 @@ def generate(endpoint, canonical, task, params, progress):
     finish = None
     done = False
     start = time.monotonic()
+    telemetry = StreamTelemetry(start)
     last = start
-    with httpx.Client(timeout=httpx.Timeout(600, connect=15)) as client:
-        with client.stream(
-            "POST", endpoint + "/chat/completions", json=payload
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line.startswith("data:"):
-                    continue
-                value = line[5:].strip()
-                if value == "[DONE]":
-                    done = True
-                    break
-                chunk = json.loads(value)
-                if chunk.get("error"):
-                    raise RuntimeError(str(chunk["error"]))
-                usage = chunk.get("usage") or usage
-                for c in chunk.get("choices", []):
-                    finish = c.get("finish_reason") or finish
-                    delta = c.get("delta", {})
-                    if delta.get("content"):
-                        answer.append(delta["content"])
-                    if delta.get("reasoning_content"):
-                        reasoning.append(delta["reasoning_content"])
-                if time.monotonic() - last > 5:
-                    progress(
-                        f'Generating {task["id"]} · {len("".join(answer))+len("".join(reasoning))} characters received'
-                    )
-                    last = time.monotonic()
-    if (
-        not done
-        or finish not in ["stop", "length"]
-        or not usage
-        or any(
-            not isinstance(usage.get(k), int) or usage[k] <= 0
-            for k in ["prompt_tokens", "completion_tokens"]
-        )
-    ):
-        raise RuntimeError("Incomplete stream or missing real token usage")
+    try:
+        with httpx.Client(timeout=httpx.Timeout(600, connect=15)) as client:
+            with client.stream(
+                "POST", endpoint + "/chat/completions", json=payload
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    value = line[5:].strip()
+                    if value == "[DONE]":
+                        done = True
+                        break
+                    chunk = json.loads(value)
+                    telemetry.observe(chunk, time.monotonic())
+                    if chunk.get("error"):
+                        raise RuntimeError(str(chunk["error"]))
+                    usage = chunk.get("usage") or usage
+                    for c in chunk.get("choices", []):
+                        finish = c.get("finish_reason") or finish
+                        delta = c.get("delta", {})
+                        if delta.get("content"):
+                            answer.append(delta["content"])
+                        if delta.get("reasoning_content"):
+                            reasoning.append(delta["reasoning_content"])
+                    if time.monotonic() - last > 5:
+                        progress(
+                            f'Generating {task["id"]} · {len("".join(answer))+len("".join(reasoning))} characters received'
+                        )
+                        last = time.monotonic()
+        if (
+            not done
+            or finish not in ["stop", "length"]
+            or not usage
+            or any(
+                not isinstance(usage.get(k), int) or usage[k] <= 0
+                for k in ["prompt_tokens", "completion_tokens"]
+            )
+        ):
+            raise RuntimeError("Incomplete stream or missing real token usage")
+    except BaseException as exc:
+        exc.evidence = dict(telemetry.evidence(time.monotonic()), usage=usage, finish_reason=finish, error=str(exc))
+        raise
     return {
+        **telemetry.evidence(time.monotonic()),
         "id": task["id"],
         "language": task["language"],
         "response": "".join(answer),
@@ -183,13 +191,18 @@ def main(path):
 
             progress("Starting request")
             log(f'[{t}] task {i+1}/{len(tasks)} {task["id"]}')
-            r = generate(
-                m["settings"]["endpoint"],
-                m["resolved"][t]["canonical"],
-                task,
-                m["profile_spec"]["parameters"],
-                progress,
-            )
+            try:
+                r = generate(
+                    m["settings"]["endpoint"],
+                    m["resolved"][t]["canonical"],
+                    task,
+                    m["profile_spec"]["parameters"],
+                    progress,
+                )
+            except BaseException as exc:
+                responses.append(dict(getattr(exc, "evidence", {}), id=task["id"], language=task["language"], error=str(exc)))
+                atomic_json(out / "responses.json", responses)
+                raise
             responses.append(r)
             atomic_json(out / "responses.json", responses)
             log(

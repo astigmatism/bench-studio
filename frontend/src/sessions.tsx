@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { PerformanceCell } from "./performance";
 type Obj = Record<string, any>;
 const format = (value: any) =>
   typeof value === "number"
@@ -486,50 +487,92 @@ export function SessionDetail({
           ? ` · ${format(summary.delta)} percentage points vs baseline`
           : ""}
       </p>
-      <div className="bs-stats">
-        {(summary.session_metrics || []).map((m: Obj) => (
-          <section className="bs-surface" key={m.name}>
-            <span className="bs-small">{m.label}</span>
-            <div className="bs-big" style={{ fontSize: 28 }}>
-              {format(m.value)} <small>{m.unit}</small>
-            </div>
-            <span className="bs-small">
-              {m.value == null &&
-              summary.passed === 0 &&
-              ["implementation_seconds", "active_seconds"].includes(m.name)
-                ? "No successful attempts"
-                : m.direction === "lower"
-                  ? "Lower is better"
-                  : "Higher is better"}
-            </span>
-          </section>
-        ))}
-      </div>
-      <section className="bs-surface">
-        <h3>Session evidence · {target}</h3>
-        <p className="bs-small">
-          {summary.compaction_count ?? 0} compactions · {usage.requests ?? 0}{" "}
-          requests ·{" "}
-          {usage.complete === false && inputTokens != null ? "at least " : ""}
-          {format(inputTokens)} input tokens ·{" "}
-          {usage.complete === false && outputTokens != null ? "at least " : ""}
-          {format(outputTokens)} output tokens
-        </p>
-        {usage.complete === false && (
+      <details className="bs-surface">
+        <summary>Session timing and token totals</summary>
+        <div className="bs-stats">
+          {(summary.session_metrics || [])
+            .filter(
+              (m: Obj) => !["request_seconds", "ttft_ms"].includes(m.name),
+            )
+            .map((m: Obj) => (
+              <section className="bs-surface" key={m.name}>
+                <span className="bs-small">{m.label}</span>
+                <div className="bs-big" style={{ fontSize: 28 }}>
+                  {format(m.value)} <small>{m.unit}</small>
+                </div>
+                <span className="bs-small">
+                  {m.value == null &&
+                  summary.passed === 0 &&
+                  ["implementation_seconds", "active_seconds"].includes(m.name)
+                    ? "No successful attempts"
+                    : m.name === "consumed_seconds"
+                      ? "Includes failed attempts"
+                      : m.direction === "lower"
+                        ? "Lower is better"
+                        : "Higher is better"}
+                </span>
+              </section>
+            ))}
+        </div>
+        <section className="bs-surface">
+          <h3>Session evidence · {target}</h3>
           <p className="bs-small">
-            Token usage is incomplete
-            {usage.reported_requests != null
-              ? `: ${usage.reported_requests} of ${usage.requests} requests reported usage`
+            {summary.compaction_count ?? 0} compactions · {usage.requests ?? 0}{" "}
+            requests ·{" "}
+            {usage.complete === false && inputTokens != null ? "at least " : ""}
+            {format(inputTokens)} input tokens ·{" "}
+            {usage.complete === false && outputTokens != null
+              ? "at least "
               : ""}
-            . Available totals are lower bounds; missing usage is unknown.
+            {format(outputTokens)} output tokens
           </p>
-        )}
-        {summary.output_limit_requests > 0 && (
-          <p className="bs-small">
-            {summary.output_limit_requests} responses reached the output limit.
-            Their time and reported tokens are included.
-          </p>
-        )}
+          {usage.complete === false && (
+            <p className="bs-small">
+              Token usage is incomplete
+              {usage.reported_requests != null
+                ? `: ${usage.reported_requests} of ${usage.requests} requests reported usage`
+                : ""}
+              . Available totals are lower bounds; missing usage is unknown.
+            </p>
+          )}
+          {summary.output_limit_requests > 0 && (
+            <p className="bs-small">
+              {summary.output_limit_requests} responses reached the output
+              limit. Their time and reported tokens are included.
+            </p>
+          )}
+        </section>
+      </details>
+      <section className="bs-surface">
+        <h3>Task and request breakdown</h3>
+        <div className="bs-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>Output speed</th>
+                <th>First token</th>
+                <th>Prompt processing</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tasks.map((task) => (
+                <tr key={task.id}>
+                  <td>{task.id}</td>
+                  <td>
+                    <PerformanceCell summary={task} id="output_tps" />
+                  </td>
+                  <td>
+                    <PerformanceCell summary={task} id="ttft_seconds" />
+                  </td>
+                  <td>
+                    <PerformanceCell summary={task} id="prompt_tps" />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         {tasks.map((task: Obj) => (
           <details key={task.id}>
             <summary>
@@ -594,6 +637,9 @@ export function SessionDetail({
                         <th>Phase</th>
                         <th>Outcome</th>
                         <th>Seconds</th>
+                        <th>Output speed</th>
+                        <th>First token</th>
+                        <th>Prompt processing</th>
                         <th>Input tokens</th>
                         <th>Output tokens</th>
                       </tr>
@@ -621,6 +667,21 @@ export function SessionDetail({
                                 "Unknown"}
                           </td>
                           <td>{format(request.elapsed_seconds)}</td>
+                          <td>
+                            {request.performance_values?.output_tps != null
+                              ? `${format(request.performance_values.output_tps)} tok/s`
+                              : "Not recorded"}
+                          </td>
+                          <td>
+                            {request.performance_values?.ttft_seconds != null
+                              ? `${format(request.performance_values.ttft_seconds)} s`
+                              : "Not recorded"}
+                          </td>
+                          <td>
+                            {request.performance_values?.prompt_tps != null
+                              ? `${format(request.performance_values.prompt_tps)} tok/s`
+                              : "Not exposed"}
+                          </td>
                           <td>{format(request.usage?.prompt_tokens)}</td>
                           <td>{format(request.usage?.completion_tokens)}</td>
                         </tr>

@@ -37,6 +37,12 @@ import {
 } from "recharts";
 import "./style.css";
 import {
+  PerformanceScorecard,
+  PerformanceDetails,
+  PerformanceCell,
+  PerformanceComparison,
+} from "./performance";
+import {
   isSession,
   sessionDefaults,
   SessionOptions,
@@ -522,72 +528,91 @@ function App() {
                     </th>
                     <th>Benchmark</th>
                     <th>Model</th>
+                    <th>Output speed</th>
+                    <th>First token</th>
+                    <th>Prompt processing</th>
                     <th>Result</th>
                     <th>vs baseline</th>
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {history.map((r) => (
-                    <tr key={r.id}>
-                      <td className="bs-checkcell">
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${r.id}`}
-                          checked={selected.includes(r.id)}
-                          disabled={deleteBusy}
-                          onChange={(e) =>
-                            setSelected(
-                              e.target.checked
-                                ? [...selected, r.id]
-                                : selected.filter((x) => x !== r.id),
-                            )
-                          }
-                        />
-                      </td>
-                      <td>
-                        <button
-                          className="bs-quiet"
-                          onClick={() => openRun(r.id)}
-                        >
-                          {runName(r)}
-                        </button>
-                        <div className="bs-small">{date(r.created_at)}</div>
-                        {r.note && <div className="bs-small">{r.note}</div>}
-                      </td>
-                      <td>
-                        {r.requested_targets.map((t: string) => (
-                          <div key={t}>
+                  {history.flatMap((r) =>
+                    r.requested_targets.map((t: string, index: number) => {
+                      const s = r.summary?.[t] || {};
+                      const count = r.requested_targets.length;
+                      return (
+                        <tr key={`${r.id}:${t}`}>
+                          {index === 0 && (
+                            <>
+                              <td className="bs-checkcell" rowSpan={count}>
+                                <input
+                                  type="checkbox"
+                                  aria-label={`Select ${r.id}`}
+                                  checked={selected.includes(r.id)}
+                                  disabled={deleteBusy}
+                                  onChange={(e) =>
+                                    setSelected(
+                                      e.target.checked
+                                        ? [...selected, r.id]
+                                        : selected.filter((x) => x !== r.id),
+                                    )
+                                  }
+                                />
+                              </td>
+                              <td rowSpan={count}>
+                                <button
+                                  className="bs-quiet"
+                                  onClick={() => openRun(r.id)}
+                                >
+                                  {runName(r)}
+                                </button>
+                                <div className="bs-small">
+                                  {date(r.created_at)}
+                                </div>
+                                {r.note && (
+                                  <div className="bs-small">{r.note}</div>
+                                )}
+                              </td>
+                            </>
+                          )}
+                          <td>
                             {label(t)}
                             <div className="bs-small">
                               {r.resolved?.[t]?.canonical || t}
                             </div>
-                          </div>
-                        ))}
-                      </td>
-                      <td>
-                        {Object.entries(r.summary || {}).map(([t, s]: any) => (
-                          <div key={t}>
+                          </td>
+                          <td>
+                            <PerformanceCell
+                              summary={s}
+                              id="output_tps"
+                              ranks
+                            />
+                          </td>
+                          <td>
+                            <PerformanceCell summary={s} id="ttft_seconds" />
+                          </td>
+                          <td>
+                            <PerformanceCell summary={s} id="prompt_tps" />
+                          </td>
+                          <td>
                             <div className="bs-value">
                               {fmt(s.score)} <small>{s.unit}</small>
                             </div>
                             <div className="bs-small">
-                              {r.requested_targets.length > 1
-                                ? label(t) + " · "
-                                : ""}
                               {s.passed !== undefined
                                 ? `${s.passed} / ${s.count} passed`
                                 : s.count
                                   ? `${s.count} samples`
                                   : ""}
                             </div>
-                          </div>
-                        ))}
-                      </td>
-                      <td>
-                        {Object.entries(r.summary || {}).map(([t, s]: any) => (
-                          <div
-                            key={t}
+                            {s.metric === "decode_tps" && (
+                              <div className="bs-small">
+                                Weighted throughput
+                              </div>
+                            )}
+                          </td>
+                          <td
                             className={s.delta > 0 ? "bs-positive" : "bs-small"}
                           >
                             {s.delta != null
@@ -595,17 +620,19 @@ function App() {
                               : s.baseline?.run_id === r.id
                                 ? "Baseline"
                                 : "—"}
-                          </div>
-                        ))}
-                      </td>
-                      <td>
-                        <RunStatus run={r} />
-                        {r.load_warning && (
-                          <div className="bs-small">Shared activity</div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                          </td>
+                          {index === 0 && (
+                            <td rowSpan={count}>
+                              <RunStatus run={r} />
+                              {r.load_warning && (
+                                <div className="bs-small">Shared activity</div>
+                              )}
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    }),
+                  )}
                 </tbody>
               </table>
               {!history.length && (
@@ -1541,6 +1568,8 @@ function RunDetail({
           </button>
         ))}
       </div>
+      {terminal.has(r.status) && <PerformanceScorecard summary={s} />}
+      <PerformanceDetails summary={s} />
       {isSession(r.profile_spec) ? (
         <SessionDetail run={r} summary={s} target={t} />
       ) : (
@@ -1548,7 +1577,7 @@ function RunDetail({
           <section className="bs-surface">
             <span className="bs-small">
               {prefill
-                ? "Prompt throughput"
+                ? "Prompt throughput estimate"
                 : speed
                   ? "Weighted throughput"
                   : r.family === "agent"
@@ -1672,7 +1701,8 @@ function RunDetail({
           )}
           {prefill && (
             <div className="bs-small">
-              X: actual input tokens · Y: prompt tokens per second
+              X: actual input tokens · Y: estimated prompt tokens per second
+              (input tokens ÷ first-token time)
             </div>
           )}
         </section>
@@ -1762,6 +1792,9 @@ function RunDetail({
               <tr>
                 <th>Task / request</th>
                 <th>Outcome</th>
+                <th>Output speed</th>
+                <th>First token</th>
+                <th>Prompt processing</th>
                 <th>Details</th>
               </tr>
             </thead>
@@ -1782,9 +1815,18 @@ function RunDetail({
                       {task.status}
                     </span>
                   </td>
+                  <td>
+                    <PerformanceCell summary={task} id="output_tps" />
+                  </td>
+                  <td>
+                    <PerformanceCell summary={task} id="ttft_seconds" />
+                  </td>
+                  <td>
+                    <PerformanceCell summary={task} id="prompt_tps" />
+                  </td>
                   <td className="bs-small">
                     {task.prefill_tps != null
-                      ? `${fmt(task.prefill_tps)} prompt tok/s · ${fmt(task.prompt_tokens, 0)} input tokens · ${fmt(task.ttft_ms)} ms TTFT`
+                      ? `${fmt(task.prefill_tps)} estimated prompt tok/s · ${fmt(task.prompt_tokens, 0)} input tokens · ${fmt(task.ttft_ms)} ms TTFT`
                       : task.decode_tps != null
                         ? `${fmt(task.decode_tps)} tok/s · ${fmt(task.ttft_ms)} ms TTFT`
                         : task.error ||
@@ -1931,6 +1973,7 @@ function Comparison({
       </div>
       {data && (
         <>
+          <PerformanceComparison a={data.a} b={data.b} />
           {data.paired && <SessionComparison paired={data.paired} />}
           <div className="bs-compare-grid">
             {[data.a, data.b].map((s: Obj, i: number) => (

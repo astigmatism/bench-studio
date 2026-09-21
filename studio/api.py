@@ -196,7 +196,7 @@ def save_profile(body: Custom):
 
 @app.get("/api/runs")
 def list_runs():
-    return [results.enrich(m) for m in db.runs()]
+    return results.history()
 
 
 @app.get("/api/runs/{rid}")

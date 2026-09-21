@@ -81,6 +81,7 @@ async def concurrency_sweep(endpoint: str, model: str,
         out.append({
             "level": level, "requests": len(recs), "ok": len(ok), "wall_s": wall,
             "aggregate_tps": (comp / wall) if wall else 0.0,
+            "measurements": [r.as_dict() for r in recs],
             "ttft_ms": [r.ttft_ms for r in ok if r.ttft_ms],
             "decode_tps": [r.decode_tps for r in ok if r.decode_tps],
             # Per-request gap series would dwarf the rest of the file at this
@@ -158,6 +159,7 @@ async def prefill_sweep(endpoint: str, model: str, cfg: Config, log=print,
         ok = [r for r in measured if r.ok]
         out.append({
             "target_depth": depth,
+            "requests": [r.as_dict() for r in measured],
             "prompt_tokens": [r.prompt_tokens for r in ok if r.prompt_tokens],
             "ttft_ms": [r.ttft_ms for r in ok if r.ttft_ms],
             "pp_tps": [r.pp_tps for r in ok if r.pp_tps],

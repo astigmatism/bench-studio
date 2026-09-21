@@ -5,6 +5,7 @@ from betterbench.report import combined_score, single_rows, prefill_rows
 from common import read_json
 from . import config, db
 from .repository import collect_trials
+from . import performance
 
 
 def baseline_slot(m, target):
@@ -74,6 +75,12 @@ def summarize(m):
                 )
             elif (root / target / "result.json").exists():
                 item.update(read_json(root / target / "result.json"))
+            elif m.get("family") == "quality" and (root / target / "responses.json").exists():
+                item["tasks"] = [
+                    dict({k: v for k, v in q.items() if k not in ("response", "reasoning")},
+                         status="failed" if q.get("error") else "not_graded")
+                    for q in read_json(root / target / "responses.json")
+                ]
             elif m.get("family") == "agent":
                 tasks = m.get("repository_tasks")
                 if not tasks and (root / "manifest.json").exists():
@@ -106,9 +113,10 @@ def summarize(m):
                 )
                 item["tasks"] = [
                     {
+                        **r,
                         "id": f"{cat}/{i + 1}",
                         "status": "passed" if r.get("ok") else "failed",
-                        "duration": r.get("elapsed_s"),
+                        "duration": r.get("wall_ms", 0) / 1000 if r.get("wall_ms") is not None else r.get("elapsed_s"),
                         "ttft_ms": r.get("ttft_ms"),
                         "decode_tps": r.get("decode_tps"),
                         "finish_reason": r.get("finish_reason"),
@@ -139,11 +147,20 @@ def summarize(m):
                             }
                         )
                         continue
+                    if "requests" in depth:
+                        item["tasks"].extend(
+                            dict(r, id=f"depth {depth['target_depth']} / {i + 1}",
+                                 status="passed" if r.get("ok") else "failed",
+                                 prefill_tps=r.get("pp_tps"))
+                            for i, r in enumerate(depth["requests"])
+                        )
+                        continue
                     for i, rate in enumerate(depth.get("pp_tps", [])):
                         item["tasks"].append(
                             {
                                 "id": f"depth {depth['target_depth']} / {i + 1}",
                                 "status": "passed",
+                                "finish_reason": "stop",
                                 "prefill_tps": rate,
                                 "prompt_tokens": depth.get("prompt_tokens", [])[i],
                                 "ttft_ms": depth.get("ttft_ms", [])[i],
@@ -165,13 +182,30 @@ def summarize(m):
             item["validation_warning"] = (
                 "Historical v1 result: predates verifier and task-validation fixes. Measurements are preserved; use a v2 profile for a corrected comparison."
             )
+        performance.attach(item)
         result[target] = item
     return result
 
 
-def enrich(m):
+def history_snapshot(extra=()):
+    runs = {m["id"]: m for m in db.runs()}
+    runs.update({m["id"]: m for m in extra})
+    summaries = {rid: summarize(m) for rid, m in runs.items()}
+    performance.rank_history(list(runs.values()), summaries)
+    with db.connect() as c:
+        baselines = {r["slot"]: dict(r) for r in c.execute("SELECT * FROM baselines")}
+    return runs, summaries, baselines
+
+
+def history():
+    snapshot = history_snapshot()
+    return [enrich(m, snapshot) for m in snapshot[0].values()]
+
+
+def enrich(m, snapshot=None):
+    runs, summaries, baselines = snapshot if snapshot is not None else history_snapshot([m])
     m = dict(m)
-    m["summary"] = summarize(m)
+    m["summary"] = summaries[m["id"]]
     root = config.DATA / "runs" / m["id"]
     m["artifacts"] = (
         [
@@ -186,12 +220,11 @@ def enrich(m):
     )
     for t, s in m["summary"].items():
         slot = baseline_slot(m, t)
-        with db.connect() as c:
-            r = c.execute("SELECT * FROM baselines WHERE slot=?", (slot,)).fetchone()
+        r = baselines.get(slot)
         if r:
-            base = db.get_run(r["run_id"])
+            base = runs.get(r["run_id"])
             if base and base["status"] == "completed":
-                bs = summarize(base).get(r["target"], {})
+                bs = summaries[base["id"]].get(r["target"], {})
                 s["baseline"] = {
                     "run_id": r["run_id"],
                     "target": r["target"],
@@ -254,7 +287,8 @@ def comparable(a, b):
 def compare(a, b, ta, tb):
     if a["status"] != "completed" or b["status"] != "completed":
         raise ValueError("Only completed runs can be compared")
-    sa, sb = summarize(a).get(ta), summarize(b).get(tb)
+    _, summaries, _ = history_snapshot([a, b])
+    sa, sb = summaries[a["id"]].get(ta), summaries[b["id"]].get(tb)
     if (
         not sa
         or not sb

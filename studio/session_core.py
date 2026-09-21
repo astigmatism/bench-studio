@@ -365,7 +365,7 @@ This is an application coding task. For optional browser interaction checks, Nod
             )
         except BaseException as exc:
             saved = {
-                **(exc.evidence if isinstance(exc, EmptyResponseError) else {}),
+                **getattr(exc, "evidence", {}),
                 "kind": tag,
                 "phase": prior,
                 "elapsed_seconds": time.monotonic() - started,

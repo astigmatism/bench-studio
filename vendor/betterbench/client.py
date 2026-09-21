@@ -188,6 +188,13 @@ class RunResult:
     truncated_in_reasoning: bool = False
     wall_ms: float | None = None
     error: str | None = None
+    timing_version: int | None = None
+    first_output_ms: float | None = None
+    last_output_ms: float | None = None
+    completion_ms: float | None = None
+    elapsed_seconds: float | None = None
+    timings: dict | None = None
+    n_updates: int = 0
 
     @property
     def itl_ms(self) -> list[float]:
@@ -347,6 +354,8 @@ def stream_chat_sync(base_url: str, model: str, messages: list[dict], *,
                      category: str = "", prompt_id: str = "",
                      extra_body: dict | None = None,
                      timeout: float = 600.0, api_key: str | None = None) -> RunResult:
+    from .telemetry import StreamTelemetry
+
     url = base_url.rstrip("/") + "/chat/completions"
     u = urllib.parse.urlparse(url)
     payload = _build_payload(model, messages, max_tokens=max_tokens,
@@ -360,6 +369,7 @@ def stream_chat_sync(base_url: str, model: str, messages: list[dict], *,
     tl = _Timeline()
     usage: dict | None = None
     t0 = time.perf_counter()
+    telemetry = StreamTelemetry(t0)
     try:
         path = u.path + (("?" + u.query) if u.query else "")
         conn.request("POST", path, json.dumps(payload),
@@ -379,6 +389,7 @@ def stream_chat_sync(base_url: str, model: str, messages: list[dict], *,
                 obj = json.loads(data)
             except json.JSONDecodeError:
                 continue
+            telemetry.observe(obj, time.perf_counter())
             if obj.get("usage"):
                 usage = obj["usage"]
             choices = obj.get("choices") or []
@@ -402,6 +413,8 @@ def stream_chat_sync(base_url: str, model: str, messages: list[dict], *,
         res.error = f"{type(e).__name__}: {e}"
         return res
     finally:
+        for key, value in telemetry.evidence(time.perf_counter()).items():
+            setattr(res, key, value)
         try:
             conn.close()
         except Exception:

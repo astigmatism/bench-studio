@@ -600,6 +600,9 @@ test("completed sessions show success and consumed time together", async ({
   await page
     .getByRole("button", { name: "Coding sessions", exact: true })
     .click();
+  await page
+    .getByText("Session timing and token totals", { exact: true })
+    .click();
   await expect(
     page.getByText("Median implementation time · successful attempts", {
       exact: true,
@@ -736,6 +739,9 @@ test("failed sessions show stopping points, partial usage and saved responses", 
       /2 attempts stopped because a response reached the 8,192-token limit/,
     ),
   ).toBeVisible();
+  await page
+    .getByText("Session timing and token totals", { exact: true })
+    .click();
   await expect(
     page.getByText("No successful attempts", { exact: true }),
   ).toBeVisible();

@@ -7,6 +7,8 @@ Only the model transport is replaced; production router configuration is untouch
 import json
 import os
 import asyncio
+import time
+import uuid
 from pathlib import Path
 from harbor.agents.terminus_2.terminus_2 import Terminus2
 from harbor.llms.base import (
@@ -34,11 +36,14 @@ class RouterLLM(BaseLLM):
             self.infrastructure_errors.setdefault(self.model, []).append(str(exc))
             raise
 
-    def __init__(self, model_name, api_base, model_info, parameters):
+    def __init__(self, model_name, api_base, model_info, parameters, evidence_dir=None):
         self.model = model_name.removeprefix("openai/")
         self.endpoint = api_base
         self.info = model_info
         self.parameters = parameters
+        self.evidence_dir = (
+            Path(evidence_dir) / "performance-requests" if evidence_dir else None
+        )
 
     def get_model_context_limit(self):
         return self.info["max_input_tokens"]
@@ -105,13 +110,25 @@ class RouterLLM(BaseLLM):
                 manifest["resolved"][target],
             )
         print(self.model, "request started; input messages", len(messages), flush=True)
-        result = await completion(
-            self.endpoint,
-            payload,
-            progress=lambda n: print(
-                self.model, "generating:", n, "characters received", flush=True
-            ),
-        )
+        started = time.monotonic()
+        try:
+            result = await completion(
+                self.endpoint,
+                payload,
+                progress=lambda n: print(
+                    self.model, "generating:", n, "characters received", flush=True
+                ),
+            )
+        except BaseException as exc:
+            self.save_measurement(
+                {
+                    **getattr(exc, "evidence", {}),
+                    "elapsed_seconds": time.monotonic() - started,
+                    "error": str(exc),
+                }
+            )
+            raise
+        self.save_measurement(result)
         if logging_path:
             Path(logging_path).parent.mkdir(parents=True, exist_ok=True)
             Path(logging_path).write_text(
@@ -143,6 +160,19 @@ class RouterLLM(BaseLLM):
             ),
         )
 
+    def save_measurement(self, result):
+        if self.evidence_dir:
+            from common import atomic_json
+
+            atomic_json(
+                self.evidence_dir / f"{time.time_ns()}-{uuid.uuid4().hex}.json",
+                {
+                    k: v
+                    for k, v in result.items()
+                    if k not in ("content", "reasoning_content")
+                },
+            )
+
 
 class RouterTerminus2(Terminus2):
     def _init_llm(
@@ -164,4 +194,4 @@ class RouterTerminus2(Terminus2):
             parameters["temperature"] = temperature
         if reasoning_effort and reasoning_effort != "default":
             parameters["reasoning_effort"] = reasoning_effort
-        return RouterLLM(model_name, api_base, model_info, parameters)
+        return RouterLLM(model_name, api_base, model_info, parameters, self.logs_dir)

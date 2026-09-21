@@ -134,6 +134,11 @@ def main(root):
                 "language": task["language"],
                 "status": "passed" if passed else "failed",
                 "duration": r["duration"],
+                **{k: r[k] for k in (
+                    "timing_version", "ttft_ms", "ttfa_ms", "first_output_ms",
+                    "last_output_ms", "completion_ms", "elapsed_seconds",
+                    "update_gaps_ms", "n_updates", "timings",
+                ) if k in r},
                 "detail": detail
                 or ("All tests passed" if passed else "Executable tests failed"),
                 "usage": r["usage"],

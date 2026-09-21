@@ -9,6 +9,20 @@ DEFINITION_PATHS = ("task.toml", "instruction.md", "environment", "tests", "solu
 BUDGET_ERRORS = {"AgentTimeoutError", "OutputLengthExceededError", "ContextLengthExceededError"}
 
 
+def request_measurements(trial):
+    rows = []
+    for path in sorted((trial / "agent" / "performance-requests").glob("*.json")):
+        try:
+            value = json.loads(path.read_text())
+            if not isinstance(value, dict):
+                raise ValueError("Expected a request measurement object")
+            rows.append(value)
+        except (OSError, ValueError) as exc:
+            # Optional timing evidence must not change the verifier's verdict.
+            rows.append({"error": "Unreadable request measurement: " + str(exc)})
+    return rows
+
+
 def snapshot_task(source, destination):
     """Copy only the task definition; oracle logs are never benchmark inputs."""
     source, destination = Path(source), Path(destination)
@@ -75,6 +89,7 @@ def collect_trials(out, expected, *, job_error=None):
                 "detail": message or ("Required tests passed" if passed else "Required tests failed"),
                 "failure_kind": "infrastructure_error" if infra else "agent_budget" if error_type in BUDGET_ERRORS else None if passed else "test_failure",
                 "reward": reward, "trial_path": str(path.relative_to(out)),
+                "requests": request_measurements(path.parent),
             }
         except (OSError, ValueError, TypeError) as exc:
             errors.append(str(exc))
