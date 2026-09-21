@@ -168,7 +168,11 @@ def readiness(suite, *, evidence=None, setup=None):
     ready = prepared
     reason = "Select Check eligibility to validate this suite's fixtures. Model smoke tests are optional; no checks start automatically."
     if setup:
-        if setup.get("phase") in {
+        if setup.get("last_error"):
+            from .session_diagnostics import failure_details
+
+            reason = failure_details(setup)["summary"]
+        elif setup.get("phase") in {
             "preparing",
             "failed",
             "interrupted",
@@ -205,7 +209,7 @@ def attach(profile):
         engine=profile["engine"]
         if profile["family"] == "vision"
         else f"Harbor 0.23.0 / Studio session agent {EXECUTION_VERSION}",
-        acceptance_version=3,
+        acceptance_version=4,
         compaction_version=1,
         screenshot_renderer=catalog().get("screenshot_renderer")
         if suite == "vision-checks"

@@ -7,7 +7,12 @@ import zipfile
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
 from common import now
@@ -149,6 +154,21 @@ def stop_session_setup():
     from . import session_control
 
     return session_control.stop()
+
+
+@app.get("/api/session-setup/logs", response_class=PlainTextResponse)
+def session_setup_logs():
+    from common import read_json
+    from .session_diagnostics import log_tail
+
+    state_path = config.DATA / "session-setup.json"
+    text = log_tail(read_json(state_path)) if state_path.exists() else None
+    if text is None:
+        raise HTTPException(404, "No eligibility log is available")
+    return PlainTextResponse(
+        text,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.get("/api/profiles")

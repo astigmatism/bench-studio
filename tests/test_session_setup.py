@@ -236,7 +236,10 @@ def test_stop_preparation_releases_update_lock_and_never_resumes_on_restart(
     assert calls.count("spawn") == 1 and not db.runs()
 
 
-def test_preparation_progress_survives_browser_reconnection(setup_state):
+@pytest.mark.parametrize("request_scoped", [False, True])
+def test_preparation_progress_survives_browser_reconnection(
+    setup_state, request_scoped
+):
     (config.DATA / "session-preparation.json").unlink()
     control = db.state(session_control.KEY)
     saved = {
@@ -247,9 +250,13 @@ def test_preparation_progress_survives_browser_reconnection(setup_state):
         "detail": "Preparing",
         "suites": {},
     }
+    relative = "session-validation/setup-progress-test/progress.json"
+    if request_scoped:
+        relative = "session-validation/setup-progress-test/request/progress.json"
+        saved["progress_path"] = "/host/project/data/" + relative
     atomic_json(config.DATA / "session-setup.json", saved)
     atomic_json(
-        config.DATA / "session-validation/setup-progress-test/progress.json",
+        config.DATA / relative,
         {
             "completed": 13,
             "total": 62,
@@ -454,7 +461,10 @@ def test_preparation_reserves_update_lock_and_releases_on_failure(
     with (config.DATA / ".execution.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     assert setup.state["phase"] == "failed"
-    assert "failed" in session_catalog.readiness("coding-sessions")["reason"]
+    assert (
+        "Your model was not used"
+        in session_catalog.readiness("coding-sessions")["reason"]
+    )
     setup.tick()
     assert len(calls) == 1
 

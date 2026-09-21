@@ -127,6 +127,8 @@ async def verify_candidate(
             "Verifier infrastructure did not produce an outcome; see verifier.log"
         )
     result = read_json(path)
+    if result.get("infrastructure_error"):
+        raise RuntimeError(result["infrastructure_error"] + "; see " + str(output))
     browser = output / "browser.json"
     if browser.exists():
         metadata = read_json(browser)

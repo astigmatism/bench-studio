@@ -140,6 +140,97 @@ async function openSetup(page: any) {
   await page.locator("summary").filter({ hasText: "Eligibility" }).click();
 }
 
+test("eligibility explains browser failures in Profiles and the blocked launch", async ({
+  page,
+}) => {
+  const state = {
+    phase: "failed",
+    can_start: true,
+    can_stop: false,
+    last_error: "offline fixture checks failed",
+    log: "/server/data/session-validation/check/preparation.log",
+    detail:
+      "Chromium crashed during startup (SIGSEGV), before browser checks could run. Your model was not used.",
+    failure: {
+      title: "Benchmark browser failed to start",
+      summary:
+        "Chromium crashed during startup (SIGSEGV), before browser checks could run. Your model was not used.",
+      suite: "coding-sessions",
+      task: "issues-medium",
+      variant: "reference",
+      next_step:
+        "Retry eligibility. If this persists, retain the log for diagnosing the server's browser runtime.",
+      command: "node /verify/browser.mjs issues-medium",
+      details:
+        "browserType.launch: Target page, context or browser has been closed\nReceived signal 11 SIGSEGV",
+    },
+  };
+  await setup(page, base, state);
+  await expect(
+    page.getByRole("heading", { name: "Benchmark browser failed to start" }),
+  ).toBeVisible();
+  await expect(page.getByText(/Your model was not used/)).toBeVisible();
+  await expect(
+    page.getByText(
+      /Failed check: coding-sessions \/ issues-medium \/ reference/,
+    ),
+  ).toBeVisible();
+  await page.locator("summary").filter({ hasText: "Failure details" }).click();
+  await expect(
+    page.locator("pre").filter({ hasText: "Received signal 11 SIGSEGV" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "View eligibility log" }),
+  ).toHaveAttribute("href", "/api/session-setup/logs");
+  await page.route("**/api/profiles", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(
+        profiles.map((p: any) =>
+          p.id === "coding-sessions"
+            ? {
+                ...p,
+                preparation: {
+                  ready: false,
+                  prepared: false,
+                  reason: state.detail,
+                },
+              }
+            : p,
+        ),
+      ),
+    }),
+  );
+  await page.reload();
+  await page
+    .getByRole("button", { name: "New benchmark", exact: true })
+    .click();
+  await page
+    .getByLabel("Profile", { exact: true })
+    .selectOption("coding-sessions");
+  await expect(
+    page.getByRole("heading", { name: "Eligibility check failed" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Benchmark browser failed to start" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "Eligibility failure" })
+      .getByText(/Your model was not used/),
+  ).toBeVisible();
+  await page.locator("summary").filter({ hasText: "Failure details" }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panel = await page
+    .getByRole("region", { name: "Profile eligibility" })
+    .boundingBox();
+  expect(panel!.x + panel!.width).toBeLessThanOrEqual(390);
+  await page.screenshot({
+    path: "test-results/eligibility-failure-mobile.png",
+    fullPage: true,
+  });
+});
+
 test("setup only starts on click and stop persists across browser reloads", async ({
   page,
 }, testInfo) => {

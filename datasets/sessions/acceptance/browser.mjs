@@ -1,7 +1,8 @@
 import { chromium } from '/opt/browser/node_modules/playwright/index.mjs';
+import { launchBrowser } from '/opt/tools/browser.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 const [task,prototype,output]=process.argv.slice(2);
-const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+const browser=await launchBrowser(chromium,output);
 const page=await browser.newPage({viewport:{width:1280,height:900},deviceScaleFactor:1});
 page.setDefaultTimeout(10000);
 await page.route('**/*',r=>r.request().url().startsWith('http://127.0.0.1:8111/')&&!prototype?r.continue():r.abort());

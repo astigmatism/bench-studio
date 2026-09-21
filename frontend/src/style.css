@@ -985,6 +985,14 @@ body {
 #app .bs-launch-setup p {
   margin-top: 10px;
 }
+#app .bs-eligibility-failure {
+  min-width: 0;
+  margin: 16px 0;
+  overflow-wrap: anywhere;
+}
+#app .bs-eligibility-failure > * + * {
+  margin-top: 10px;
+}
 #app .bs-session-detail {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

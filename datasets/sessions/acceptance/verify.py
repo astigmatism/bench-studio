@@ -50,6 +50,14 @@ def command(args, **kw):
         }
     )
     if proc.returncode:
+        startup = out / "browser-startup.json"
+        if args[:2] == ["node", "/verify/browser.mjs"] and startup.exists():
+            evidence = json.loads(startup.read_text())
+            if evidence.get("status") == "failed":
+                result["infrastructure_error"] = (
+                    "Chromium failed to start after "
+                    f"{evidence['attempts']} launch attempts; no browser checks ran"
+                )
         raise RuntimeError("Check failed: " + " ".join(args))
     return proc.stdout
 

@@ -1,7 +1,8 @@
 import { chromium } from '/opt/browser/node_modules/playwright/index.mjs';
+import { launchBrowser } from './browser.mjs';
 import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
 const [source,out]=process.argv.slice(2);mkdirSync(out,{recursive:true});
-const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+const browser=await launchBrowser(chromium,out);
 const records=[];
 for(const [name,width,height] of [['desktop',1280,900],['mobile',390,844]]){
  const page=await browser.newPage({viewport:{width,height},deviceScaleFactor:1});

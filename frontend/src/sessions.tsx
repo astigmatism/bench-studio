@@ -7,6 +7,36 @@ const format = (value: any) =>
 const title = (value: string) => value.replaceAll("_", " ");
 export const isSession = (profile: Obj | undefined) =>
   ["session", "vision"].includes(profile?.family);
+export function EligibilityFailure({ state }: { state: Obj }) {
+  const failure = state.failure;
+  if (!failure) return null;
+  return (
+    <section
+      className="bs-eligibility-failure"
+      aria-label="Eligibility failure"
+    >
+      <h3>{failure.title}</h3>
+      <p className="bs-small">{failure.summary}</p>
+      {failure.task && (
+        <p className="bs-small">
+          Failed check: {title(failure.suite)} / {failure.task} /{" "}
+          {failure.variant}
+        </p>
+      )}
+      <p>{failure.next_step}</p>
+      <details>
+        <summary>Failure details</summary>
+        {failure.command && <p className="bs-small">{failure.command}</p>}
+        <pre className="bs-log">{failure.details}</pre>
+      </details>
+      {state.log && (
+        <a href="/api/session-setup/logs" target="_blank" rel="noreferrer">
+          View eligibility log
+        </a>
+      )}
+    </section>
+  );
+}
 export function sessionDefaults(profile: Obj | undefined) {
   return {
     difficulty: profile?.difficulty,

@@ -16,6 +16,7 @@ import time
 import uuid
 from common import atomic_json, now, read_json
 from . import config, db, session_control
+from .session_diagnostics import evidence_path, failure_details
 from .session_catalog import (
     ROOT,
     PROTOCOL_VERSION,
@@ -40,6 +41,8 @@ def controls(state):
             can_start=False,
         )
     elif active and state.get("request_id") != control["id"]:
+        state.pop("failure", None)
+        state.pop("last_error", None)
         state.update(
             phase="requested",
             detail="Eligibility check requested. Waiting for the controller; no new eligibility request is needed.",
@@ -56,6 +59,9 @@ def controls(state):
             else ""
         ) + PAUSED_DETAIL
         state.update(phase="paused", detail=detail)
+        if state.get("last_error"):
+            state["failure"] = failure_details(state)
+            state.update(phase="failed", detail=state["failure"]["summary"])
     return state
 
 
@@ -100,9 +106,11 @@ def status():
     )
     if state.get("phase") == "preparing" and state.get("owner"):
         progress_path = (
-            config.DATA / "session-validation" / state["owner"] / "progress.json"
+            evidence_path(state["progress_path"])
+            if state.get("progress_path")
+            else (config.DATA / "session-validation" / state["owner"] / "progress.json")
         )
-        if progress_path.exists():
+        if progress_path and progress_path.exists():
             progress = read_json(progress_path)
             state["preparation_progress"] = progress
             state["detail"] = (
@@ -344,9 +352,12 @@ class SessionSetup:
             ):
                 self.release()
                 return False
-            directory = config.DATA / "session-validation" / self.owner
+            directory = (
+                config.DATA / "session-validation" / self.owner / self.request_id
+            )
             directory.mkdir(parents=True, exist_ok=True)
             log = directory / "preparation.log"
+            progress_path = directory / "progress.json"
             with log.open("a") as output:
                 self.child = subprocess.Popen(
                     [
@@ -364,6 +375,7 @@ class SessionSetup:
                     env=dict(
                         os.environ,
                         STUDIO_PREPARATION_OWNER=self.owner,
+                        STUDIO_PREPARATION_PROGRESS=str(progress_path),
                         STUDIO_CONTROLLER_PID=str(os.getpid()),
                     ),
                 )
@@ -371,6 +383,7 @@ class SessionSetup:
                 "preparing",
                 "Checking benchmark eligibility on this machine. Offline reference and negative-control checks are running.",
                 log=str(log),
+                progress_path=str(progress_path),
             )
             return True
         if not db.state(session_control.KEY, {}).get("run_smoke"):

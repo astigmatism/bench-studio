@@ -198,7 +198,9 @@ print(json.dumps(result))
         completed += 1
         if owner := os.environ.get("STUDIO_PREPARATION_OWNER"):
             atomic_json(
-                config.DATA / "session-validation" / owner / "progress.json",
+                Path(os.environ["STUDIO_PREPARATION_PROGRESS"])
+                if os.environ.get("STUDIO_PREPARATION_PROGRESS")
+                else config.DATA / "session-validation" / owner / "progress.json",
                 {
                     "completed": completed,
                     "total": total,

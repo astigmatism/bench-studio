@@ -42,6 +42,7 @@ import {
   SessionOptions,
   SessionDetail,
   SessionComparison,
+  EligibilityFailure,
 } from "./sessions";
 type Obj = Record<string, any>;
 const runName = (run: Obj) =>
@@ -315,6 +316,8 @@ function App() {
           ...previous.session_setup,
           phase: action === "stop" ? "stopping" : "requested",
           detail: message,
+          failure: undefined,
+          last_error: undefined,
           can_start: false,
           can_stop: action === "start" && !!response.active,
         },
@@ -641,7 +644,9 @@ function App() {
                       ? "In progress"
                       : health.session_setup.phase === "ready"
                         ? "Ready"
-                        : "Eligibility check required"}
+                        : health.session_setup.failure
+                          ? "Failed"
+                          : "Eligibility check required"}
                   </span>
                 </summary>
                 <div
@@ -649,7 +654,10 @@ function App() {
                   aria-label="Benchmark suite eligibility"
                   className="bs-setup-content"
                 >
-                  <p className="bs-small">{health.session_setup.detail}</p>
+                  {!health.session_setup.failure && (
+                    <p className="bs-small">{health.session_setup.detail}</p>
+                  )}
+                  <EligibilityFailure state={health.session_setup} />
                   {(health.session_setup.can_start ||
                     health.session_setup.can_stop) && (
                     <div className="bs-setup-suite">
@@ -1224,9 +1232,11 @@ function Launcher({
         >
           <div className="bs-spread">
             <h3>
-              {setup.can_stop
-                ? "Checking eligibility"
-                : "Eligibility check required"}
+              {setup.failure
+                ? "Eligibility check failed"
+                : setup.can_stop
+                  ? "Checking eligibility"
+                  : "Eligibility check required"}
             </h3>
             {setup.can_stop ? (
               <Button disabled={!!setupBusy} onClick={stopSetup}>
@@ -1250,7 +1260,8 @@ function Launcher({
               ? setup.detail
               : "Validate this suite’s projects and tests on the server. Eligibility checks do not use the model or start a benchmark. Your selections will stay here."}
           </p>
-          {setup.last_error && (
+          <EligibilityFailure state={setup} />
+          {setup.last_error && !setup.failure && (
             <p className="bs-small">
               Last eligibility check: {setup.last_error}
             </p>
