@@ -62,7 +62,12 @@ def snapshot(run):
                 .get("reasoning", {})
                 .get("default", "runtime default"),
             ),
-            "basis": "Request overrides merged with backend defaults observed before execution; not a server echo. Per-workload output budgets apply where listed.",
+            "basis": (
+                "Request overrides merged with backend defaults advertised by the remote APIs; not a server echo. Per-workload output budgets apply where listed."
+                if defaults else
+                "Request overrides and per-workload output budgets where listed. The remote APIs did not expose backend defaults; unspecified sampling settings are unknown. Not a server echo."
+            ),
             "backend_defaults_available": bool(defaults),
+            "backend_defaults_unavailable": observed.get("unavailable") if not defaults else None,
         }
     return result

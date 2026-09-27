@@ -21,6 +21,7 @@ const base = {
   started_at: "2026-09-18T12:00:01Z",
   requested_targets: ["daytime"],
   resolved: { daytime: { canonical: "Local model", context: 131072 } },
+  model_fingerprints: { daytime: "local-model-runtime-identity" },
   summary: {
     daytime: {
       count: 2,
@@ -79,6 +80,7 @@ async function setup(page: any, run: any = base, setupState: any = null) {
           {
             alias: "daytime",
             canonical: "Local model",
+            fingerprint: "local-model-runtime-identity",
             context: 131072,
             available: true,
             vision: true,

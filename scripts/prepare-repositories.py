@@ -7,13 +7,25 @@ import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "datasets" / "cache" / "repository-candidates"
-OUT.mkdir(parents=True, exist_ok=True)
 HF = "7ab5114912baf22bb098818e604c02fe7ad2c11f"
 SCRIPTS = "ca10a60a5fcae51e6948ffe1485d4153d421e6c5"
 HARBOR = "b07f3bfb2c5730c50119c6c84e0e4d8572d9a7f2"
+manifest_path = ROOT / "datasets" / "repository-candidates.json"
+if not manifest_path.is_file():
+    raise RuntimeError("Missing committed repository candidate manifest")
+expected = json.loads(manifest_path.read_text())
+if (
+    expected.get("dataset_revision") != HF
+    or expected.get("scripts_revision") != SCRIPTS
+    or expected.get("adapter_revision") != HARBOR
+):
+    raise RuntimeError("Repository candidate manifest source revisions changed")
+OUT.mkdir(parents=True, exist_ok=True)
 raw = urllib.request.urlopen(
     f"https://huggingface.co/datasets/ScaleAI/SWE-bench_Pro/resolve/{HF}/data/test-00000-of-00001.parquet"
 ).read()
+if hashlib.sha256(raw).hexdigest() != expected.get("dataset_sha256"):
+    raise RuntimeError("Repository dataset digest mismatch")
 rows = pq.read_table(io.BytesIO(raw)).to_pylist()
 archive = tarfile.open(
     fileobj=io.BytesIO(
@@ -146,7 +158,6 @@ network_mode = "no-network"
                 "base_image": image,
             }
         )
-(ROOT / "datasets" / "repository-candidates.json").write_text(
-    json.dumps(manifest, indent=2) + "\n"
-)
+if manifest != expected:
+    raise RuntimeError("Generated repository candidates differ from the committed manifest")
 print("Prepared", len(manifest["candidates"]), "candidate task definitions")

@@ -98,6 +98,55 @@ def test_requested_qualification_is_durable_sequential_and_not_replayed(setup_st
             assert not response.json()["profile_spec"].get("qualification")
 
 
+@pytest.mark.parametrize(
+    "pinned,expected",
+    [
+        ("", {"coding-sessions": "text-live", "vision-checks": "vision-live", "visual-design": "vision-live"}),
+        ("vision-canonical", {suite: "vision-live" for suite in SUITES}),
+    ],
+)
+def test_optional_checks_resolve_current_models_without_old_aliases(
+    setup_state, monkeypatch, pinned, expected
+):
+    def model(alias, canonical, vision):
+        return {
+            "alias": alias,
+            "canonical": canonical,
+            "available": True,
+            "vision": vision,
+            "resolved": {
+                "alias": alias,
+                "canonical": canonical,
+                "context": 32768,
+                "reserve": 1024,
+                "service": {"model": canonical},
+                "metadata": {
+                    "capabilities": ["vision"] if vision else [],
+                    "input_modalities": ["text", "image"] if vision else ["text"],
+                },
+            },
+        }
+
+    monkeypatch.setattr(config, "SESSION_SMOKE_TARGET", pinned)
+    monkeypatch.setattr(
+        discovery,
+        "discover",
+        lambda: {
+            "models": [
+                model("text-live", "text-canonical", False),
+                model("vision-live", "vision-canonical", True),
+            ]
+        },
+    )
+    SessionSetup().tick()
+    assert {
+        run["profile"]: run["requested_targets"][0] for run in db.runs()
+    } == expected
+    for run in db.runs():
+        alias = run["requested_targets"][0]
+        assert run["resolved"][alias]["canonical"].endswith("-canonical")
+
+
 def test_default_setup_is_offline_and_suites_survive_restart_without_model_pass(
     setup_state, monkeypatch
 ):
@@ -556,6 +605,9 @@ def test_old_updater_build_and_recreate_commands_keep_setup_manual(tmp_path):
         PROJECT_DIR=str(tmp_path),
         LLM_ENDPOINT="http://runtime/v1",
         RUNTIME_URL="http://runtime/status",
+        HOST_UID="1000",
+        HOST_GID="1000",
+        SESSION_SMOKE_TARGET="",
     )
     if not __import__("shutil").which("docker"):
         pytest.skip("Docker Compose config validation is exercised locally")
@@ -574,8 +626,18 @@ def test_old_updater_build_and_recreate_commands_keep_setup_manual(tmp_path):
     )
     runner = services["runner"]
     assert "SESSION_AUTO_SETUP" not in runner["environment"]
-    assert runner["environment"]["SESSION_SMOKE_TARGET"] == "daytime"
-    assert any(v.get("target", "").endswith("/data") for v in runner["volumes"])
+    assert runner["environment"]["SESSION_SMOKE_TARGET"] == ""
+    assert runner["environment"]["HOST_UID"] == "1000"
+    assert runner["environment"]["HOST_GID"] == "1000"
+    data_path = str(tmp_path / "data")
+    assert any(
+        v.get("source") == data_path and v.get("target") == data_path
+        for v in runner["volumes"]
+    )
+    assert any(
+        v.get("source") == data_path and v.get("target") == "/data"
+        for v in services["reports"]["volumes"]
+    )
     labelled = [
         s
         for s in services.values()

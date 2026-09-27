@@ -28,6 +28,52 @@ def run(*args, check=True, capture=True, env=None):
     return p
 
 
+def validate_compose_config(env=None):
+    """Ensure both services use this checkout's durable host data directory."""
+    config = json.loads(
+        run("docker", "compose", "config", "--format", "json", env=env).stdout
+    )
+    services = config["services"]
+    reports, runner = services["reports"], services["runner"]
+    project = runner.get("environment", {}).get("PROJECT_DIR", "")
+    if not Path(project).is_absolute() or Path(project).resolve() != ROOT.resolve():
+        raise RuntimeError(
+            "PROJECT_DIR must be the absolute path of this checkout: " + str(ROOT)
+        )
+    data = str(ROOT / "data")
+
+    def has_bind(service, target):
+        return any(
+            volume.get("type") == "bind"
+            and os.path.normpath(volume.get("source", "")) == data
+            and os.path.normpath(volume.get("target", "")) == target
+            for volume in service.get("volumes", [])
+        )
+
+    if not has_bind(reports, "/data") or not has_bind(runner, data):
+        raise RuntimeError(
+            "reports and runner must bind the same PROJECT_DIR/data host path"
+        )
+    if (
+        reports.get("environment", {}).get("DATA_ROOT") != "/data"
+        or os.path.normpath(runner.get("environment", {}).get("DATA_ROOT", ""))
+        != data
+    ):
+        raise RuntimeError("DATA_ROOT must match each service's data bind mount")
+    uid = runner.get("environment", {}).get("HOST_UID", "")
+    gid = runner.get("environment", {}).get("HOST_GID", "")
+    if (
+        not uid.isdecimal()
+        or not gid.isdecimal()
+        or int(uid) > 2**31 - 1
+        or int(gid) > 2**31 - 1
+    ):
+        raise RuntimeError("HOST_UID and HOST_GID must be valid numeric host IDs")
+    user = uid + ":" + gid
+    if reports.get("user") != user or runner.get("user") != user:
+        raise RuntimeError("Service user and worker HOST_UID/HOST_GID must match")
+
+
 def preflight():
     for tool in ["git", "docker", "python3"]:
         if not shutil.which(tool):
@@ -54,6 +100,7 @@ def preflight():
         raise RuntimeError("Missing compose.yaml")
     run("docker", "info", "--format", "{{.ServerVersion}}")
     run("docker", "compose", "version")
+    validate_compose_config()
 
 
 def deploy():
@@ -116,6 +163,7 @@ def deploy():
             run("git", "merge", "--ff-only", "origin/main")
             revision = run("git", "rev-parse", "HEAD").stdout.strip()
             env = dict(os.environ, SOURCE_REVISION=revision)
+            validate_compose_config(env=env)
             backup = (
                 data
                 / "backups"
@@ -222,7 +270,13 @@ def deploy():
 
 if __name__ == "__main__":
     try:
-        deploy()
+        if sys.argv[1:] == ["--check-config"]:
+            validate_compose_config()
+            print("Compose uses this checkout's absolute, shared data directory")
+        elif len(sys.argv) == 1:
+            deploy()
+        else:
+            raise RuntimeError("Usage: update.py [--check-config]")
     except Exception as e:
         print("Error: " + str(e), file=sys.stderr, flush=True)
         sys.exit(1)

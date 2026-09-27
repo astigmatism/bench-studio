@@ -22,6 +22,61 @@ def snap():
                 "quantization": "Q8_0", "reasoning": {"default": "default"}}}]}}
 
 
+@pytest.mark.parametrize("names", [
+    ["new-model"],
+    ["new-model", "vendor/second:70b", "third-model"],
+])
+def test_discovery_uses_canonical_models_without_fixed_aliases(monkeypatch, names):
+    from common import safe_target
+    from studio import discovery
+
+    snap = {
+        "runtime": {
+            "ready": True,
+            "services": [
+                {"model": name, "id": f"remote-{i}", "healthy": True,
+                 "running": True, "processing": False}
+                for i, name in enumerate(names)
+            ],
+        },
+        "models": {"data": [
+            {"id": name, "x_ollama_router": {
+                "upstream_model": name, "alias": False,
+                "aliases": ["local-active"] if i == 0 else [],
+                "complete": True, "health": {"available": True},
+                "context_window": 32768,
+            }}
+            for i, name in enumerate(names)
+        ]},
+    }
+    snap["models"]["data"].append({
+        "id": "local-active", "x_ollama_router": {
+            **snap["models"]["data"][0]["x_ollama_router"], "alias": True,
+        },
+    })
+    monkeypatch.setattr(discovery, "snapshot", lambda _: snap)
+    models = discovery.discover()["models"]
+    assert [m["canonical"] for m in models] == names
+    assert [m["alias"] for m in models] == [safe_target(name) for name in names]
+    assert all(m["available"] for m in models)
+
+
+def test_discovery_marks_unhealthy_remote_model_unavailable(monkeypatch):
+    from studio import discovery
+
+    snap = {
+        "runtime": {"ready": True, "services": [
+            {"model": "future", "healthy": False, "running": True},
+        ]},
+        "models": {"data": [{"id": "future", "x_ollama_router": {
+            "complete": True, "health": {"available": False},
+            "context_window": 8192,
+        }}]},
+    }
+    monkeypatch.setattr(discovery, "snapshot", lambda _: snap)
+    assert discovery.discover()["models"][0]["available"] is False
+
+
 def test_discovery_follows_future_runtime_model_and_context(snap):
     before = resolve(snap, "daytime")
     after = copy.deepcopy(snap)

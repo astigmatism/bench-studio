@@ -14,12 +14,10 @@ import {
   Info,
   Layers,
   LoaderCircle,
-  Moon,
   Play,
   Plus,
   RotateCcw,
   Square,
-  Sun,
   Trash2,
   Zap,
 } from "lucide-react";
@@ -393,7 +391,7 @@ function App() {
               background: runtime.ready ? "var(--bs-good)" : "var(--bs-warn)",
             }}
           />
-          {models.length} models ·{" "}
+          {models.length} {models.length === 1 ? "model" : "models"} ·{" "}
           {runtime.ready ? "runtime ready" : "runtime unavailable"}
         </div>
       </header>
@@ -424,7 +422,7 @@ function App() {
           <>
             <div className="bs-heading">
               <div>
-                <div className="bs-eyebrow">Your local model lab</div>
+                <div className="bs-eyebrow">Your model lab</div>
                 <h1>Every change, measured.</h1>
                 <p className="bs-sub">
                   Run a profile. Keep a baseline. See what improved.
@@ -964,7 +962,11 @@ function Launcher({
   onError: (s: string) => void;
 }) {
   const [pid, setPid] = useState(initialProfile),
-    [targets, setTargets] = useState<string[]>(rerun?.requested_targets || []),
+    [modelSelection, setModelSelection] = useState<{
+      alias: string;
+      canonical: string;
+      fingerprint: string;
+    } | null>(null),
     [size, setSize] = useState(
       rerun?.profile_spec?.size ||
         (profiles
@@ -976,9 +978,18 @@ function Launcher({
     ),
     [params, setParams] = useState<Obj>(rerun?.profile_spec?.parameters || {}),
     [note, setNote] = useState(""),
-    [mode, setMode] = useState(rerun?.mode || "sequential"),
     [busy, setBusy] = useState(false),
     [customName, setCustomName] = useState("");
+  const selectionTouched = useRef(false);
+  const previousTargets: string[] = rerun?.requested_targets || [];
+  const previousCanonical =
+    previousTargets.length === 1
+      ? rerun?.resolved?.[previousTargets[0]]?.canonical
+      : null;
+  const previousFingerprint =
+    previousTargets.length === 1
+      ? rerun?.model_fingerprints?.[previousTargets[0]]
+      : null;
   const p = profiles.find((x) => x.id === pid);
   const qualification =
     !!rerun?.profile_spec?.qualification && pid === rerun?.profile;
@@ -993,23 +1004,65 @@ function Launcher({
   );
   const values = { ...p?.parameters, ...params };
   useEffect(() => {
-    if (!targets.length && models.some((m) => m.available))
-      setTargets([models.find((m) => m.available)!.alias]);
-  }, [models]);
+    if (selectionTouched.current || modelSelection || !models.length) return;
+    if (rerun) {
+      const match = models.find(
+        (m) =>
+          m.available &&
+          m.canonical === previousCanonical &&
+          previousFingerprint &&
+          m.fingerprint === previousFingerprint,
+      );
+      if (match)
+        setModelSelection({
+          alias: match.alias,
+          canonical: match.canonical,
+          fingerprint: match.fingerprint,
+        });
+    } else {
+      const first = models.find((m) => m.available);
+      if (first)
+        setModelSelection({
+          alias: first.alias,
+          canonical: first.canonical,
+          fingerprint: first.fingerprint,
+        });
+    }
+  }, [models, modelSelection, previousCanonical, previousFingerprint, rerun]);
+  useEffect(() => {
+    if (
+      modelSelection &&
+      models.length &&
+      !models.some(
+        (m) =>
+          m.alias === modelSelection.alias &&
+          m.canonical === modelSelection.canonical &&
+          m.fingerprint === modelSelection.fingerprint,
+      )
+    ) {
+      selectionTouched.current = true;
+      setModelSelection(null);
+    }
+  }, [models, modelSelection]);
   const choose = (id: string) => {
     setPid(id);
     setParams({});
     setSession(sessionDefaults(profiles.find((p) => p.id === id)));
-    setMode("sequential");
     setSize(
       profiles.find((p) => p.id === id)?.sizes?.includes("standard")
         ? "standard"
         : profiles.find((p) => p.id === id)?.sizes?.[0] || "standard",
     );
   };
-  const selected = models.filter((m) => targets.includes(m.alias));
-  const unsupported =
-    selected.some((m) => !m.available) || selected.length !== targets.length;
+  const selected = models.filter(
+    (m) =>
+      modelSelection !== null &&
+      m.alias === modelSelection.alias &&
+      m.canonical === modelSelection.canonical &&
+      m.fingerprint === modelSelection.fingerprint,
+  );
+  const targets = selected.map((m) => m.alias);
+  const unsupported = selected.some((m) => !m.available);
   const count =
     p?.family === "quality"
       ? size === "quick"
@@ -1033,7 +1086,6 @@ function Launcher({
       pid,
       size,
       params,
-      mode,
       note,
       session,
     });
@@ -1052,7 +1104,7 @@ function Launcher({
         profile: pid,
         size,
         overrides: params,
-        mode: targets.length > 1 ? mode : "sequential",
+        mode: "sequential",
         note,
         idempotency_key: submission.current.key,
         ...(isSession(p) ? session : {}),
@@ -1099,13 +1151,18 @@ function Launcher({
       {rerun && (
         <div className="bs-alert">
           <Info size={16} />
-          Review the currently loaded models below. Your previous run used{" "}
-          {Object.values(rerun.resolved || {})
-            .map(
-              (r: any) => r.canonical + " (" + fmt(r.context, 0) + " context)",
-            )
-            .join(" + ")}
-          .
+          {previousTargets.length > 1
+            ? "This historical run used multiple models. Choose one current model to run again."
+            : previousCanonical &&
+                models.some(
+                  (m) =>
+                    m.available &&
+                    m.canonical === previousCanonical &&
+                    previousFingerprint &&
+                    m.fingerprint === previousFingerprint,
+                )
+              ? `Previous model: ${previousCanonical}. Its current listing is available below; review it before queuing.`
+              : `The saved model${previousCanonical ? ` (${previousCanonical})` : ""} is unavailable or has changed. Choose a current model explicitly to run again.`}
         </div>
       )}
       <h3>1. Choose a loaded model</h3>
@@ -1115,29 +1172,44 @@ function Launcher({
             disabled={!m.available}
             className="bs-model"
             key={m.alias}
-            aria-pressed={targets.includes(m.alias)}
-            onClick={() =>
-              setTargets(
-                targets.includes(m.alias)
-                  ? targets.filter((t) => t !== m.alias)
-                  : [...targets, m.alias],
-              )
+            aria-pressed={
+              modelSelection !== null &&
+              modelSelection.alias === m.alias &&
+              modelSelection.canonical === m.canonical &&
+              modelSelection.fingerprint === m.fingerprint
             }
+            onClick={() => {
+              selectionTouched.current = true;
+              setModelSelection(
+                modelSelection !== null &&
+                  modelSelection.alias === m.alias &&
+                  modelSelection.canonical === m.canonical &&
+                  modelSelection.fingerprint === m.fingerprint
+                  ? null
+                  : {
+                      alias: m.alias,
+                      canonical: m.canonical,
+                      fingerprint: m.fingerprint,
+                    },
+              );
+            }}
           >
             <span className="bs-spread">
               <span className="bs-inline">
-                {m.alias === "nighttime" ? (
-                  <Moon size={17} />
-                ) : (
-                  <Sun size={17} />
-                )}
+                <Layers size={17} />
                 <strong>{label(m.alias)}</strong>
               </span>
-              {targets.includes(m.alias) && <CheckCircle2 size={17} />}
+              {modelSelection !== null &&
+                modelSelection.alias === m.alias &&
+                modelSelection.canonical === m.canonical &&
+                modelSelection.fingerprint === m.fingerprint && (
+                  <CheckCircle2 size={17} />
+                )}
             </span>
             <span className="bs-model-name">{m.canonical}</span>
             <span className="bs-model-name">
-              {fmt(m.context, 0)} context · {m.gpus?.join(" + ")}
+              {fmt(m.context, 0)} context
+              {m.gpus?.length ? ` · ${m.gpus.join(" + ")}` : ""}
             </span>
             <span className="bs-model-name">
               {m.available
@@ -1305,23 +1377,6 @@ function Launcher({
             placeholder="e.g. Raised context to 160K"
           />
         </label>
-        {targets.length > 1 && (
-          <label className="bs-field">
-            Run both models
-            <select
-              aria-label="Run both models"
-              value={mode}
-              onChange={(e) => setMode(e.target.value)}
-            >
-              <option value="sequential">
-                Sequential · isolated comparison
-              </option>
-              {!isSession(p) && (
-                <option value="parallel">Simultaneous · shared load</option>
-              )}
-            </select>
-          </label>
-        )}
       </div>
       <details>
         <summary>Advanced parameters · profile defaults</summary>
@@ -1331,12 +1386,9 @@ function Launcher({
             .filter(
               (k) =>
                 k !== "reasoning_budget_tokens" ||
-                (targets.length > 0 &&
-                  targets.every((t) =>
-                    Object.values(
-                      models.find((m) => m.alias === t)?.reasoning
-                        ?.per_effort || {},
-                    ).some((v: any) => v.reasoning_budget_tokens !== undefined),
+                (selected.length === 1 &&
+                  Object.values(selected[0].reasoning?.per_effort || {}).some(
+                    (v: any) => v.reasoning_budget_tokens !== undefined,
                   )),
             )
             .map((k) => (
@@ -1412,9 +1464,9 @@ function Launcher({
       )}
       <div className="bs-launch-summary">
         <div>
-          {targets.map(label).join(" + ") || "Select a model"} / {p?.name}
+          {selected[0]?.canonical || "Select a model"} / {p?.name}
           <div className="bs-small">
-            1 request per model · queues until idle ·{" "}
+            Queues until idle ·{" "}
             {p?.family === "speed"
               ? "native throughput"
               : p?.family === "agent"
@@ -1430,11 +1482,7 @@ function Launcher({
             unsupported ||
             !p ||
             needsSetup ||
-            (p?.requires_vision &&
-              selected.some(
-                (m) =>
-                  !(m.vision || m.resolved?.metadata?.capabilities?.vision),
-              ))
+            (p?.requires_vision && selected.some((m) => !m.vision))
           }
           onClick={launch}
         >
@@ -1713,7 +1761,7 @@ function RunDetail({
             <dd>{resolved.canonical}</dd>
             <dt>Context window</dt>
             <dd>{fmt(resolved.context, 0)} tokens</dd>
-            <dt>GPU pair</dt>
+            <dt>GPUs</dt>
             <dd>{resolved.service?.gpu_names?.join(" + ") || "Unavailable"}</dd>
             <dt>Reasoning</dt>
             <dd>{params.reasoning_effort || "runtime default"}</dd>

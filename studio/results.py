@@ -1,8 +1,6 @@
-import json
 import statistics
-from pathlib import Path
 from betterbench.report import combined_score, single_rows, prefill_rows
-from common import read_json
+from common import model_fingerprint, read_json
 from . import config, db
 from .repository import collect_trials
 from . import performance
@@ -205,6 +203,14 @@ def history():
 def enrich(m, snapshot=None):
     runs, summaries, baselines = snapshot if snapshot is not None else history_snapshot([m])
     m = dict(m)
+    m["model_fingerprints"] = {}
+    for target, resolved in m.get("resolved", {}).items():
+        try:
+            m["model_fingerprints"][target] = model_fingerprint(resolved)
+        except (KeyError, TypeError, ValueError):
+            # Old imported manifests may not contain a complete identity.
+            # Their reruns require the operator to select a model explicitly.
+            pass
     m["summary"] = summaries[m["id"]]
     root = config.DATA / "runs" / m["id"]
     m["artifacts"] = (
@@ -306,7 +312,7 @@ def compare(a, b, ta, tb):
         "model": (aa.get("canonical"), bb.get("canonical")),
         "context": (aa.get("context"), bb.get("context")),
         "runtime revision": (aa.get("runtime_revision"), bb.get("runtime_revision")),
-        "GPU pair": (
+        "GPUs": (
             aa.get("service", {}).get("gpu_names"),
             bb.get("service", {}).get("gpu_names"),
         ),

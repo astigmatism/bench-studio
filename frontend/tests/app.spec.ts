@@ -4,6 +4,26 @@ const profiles = JSON.parse(
   readFileSync(new URL("./profiles.json", import.meta.url), "utf8"),
 );
 const resolved = { canonical: "Qwen coding model", context: 131072 };
+const advertised = [
+  {
+    alias: "qwen-coder",
+    canonical: "Qwen coding model",
+    fingerprint: "qwen-original-runtime-identity",
+    context: 131072,
+    available: true,
+    gpus: ["GPU A", "GPU B"],
+    reasoning: { efforts: { off: "none", low: "low" } },
+  },
+  {
+    alias: "vision-26",
+    canonical: "Vision model",
+    fingerprint: "vision-original-runtime-identity",
+    context: 65536,
+    available: true,
+    gpus: ["GPU C"],
+    reasoning: { efforts: { off: "none" } },
+  },
+];
 const completed = {
   id: "completed-001",
   profile: "coding",
@@ -16,6 +36,7 @@ const completed = {
   mode: "sequential",
   requested_targets: ["daytime"],
   resolved: { daytime: resolved },
+  model_fingerprints: { daytime: "qwen-original-runtime-identity" },
   summary: {
     daytime: {
       score: 42,
@@ -39,13 +60,7 @@ test.beforeEach(async ({ page }) => {
     else if (path === "/api/models")
       body = {
         runtime: { ready: true },
-        models: ["daytime", "nighttime"].map((alias) => ({
-          alias,
-          ...resolved,
-          available: true,
-          gpus: ["GPU A", "GPU B"],
-          reasoning: { efforts: { off: "none", low: "low" } },
-        })),
+        models: advertised,
       };
     else if (path === "/api/profiles") body = profiles;
     else if (path === "/api/events")
@@ -60,6 +75,21 @@ test.beforeEach(async ({ page }) => {
         ...completed,
         id: "new-run",
         requested_targets: p.targets,
+        resolved: Object.fromEntries(
+          p.targets.map((alias: string) => [
+            alias,
+            {
+              canonical: advertised.find((m) => m.alias === alias)?.canonical,
+              context: advertised.find((m) => m.alias === alias)?.context,
+            },
+          ]),
+        ),
+        model_fingerprints: Object.fromEntries(
+          p.targets.map((alias: string) => [
+            alias,
+            advertised.find((m) => m.alias === alias)?.fingerprint,
+          ]),
+        ),
         status: "queued",
         summary: {},
         progress: "Waiting for an idle machine",
@@ -88,16 +118,30 @@ test.beforeEach(async ({ page }) => {
   });
   await page.goto("/");
 });
-test("launch both models, view live logs, cancel, and review rerun", async ({
+test("launch one advertised model, view live logs, cancel, and review rerun", async ({
   page,
 }) => {
   await page
     .getByRole("button", { name: "New benchmark", exact: true })
     .click();
-  await page.getByRole("button", { name: /Nighttime Qwen/ }).click();
-  await expect(page.getByLabel("Run both models")).toHaveValue("sequential");
+  const coder = page.getByRole("button", {
+    name: /Qwen-coder Qwen coding model/,
+  });
+  const vision = page.getByRole("button", { name: /Vision-26 Vision model/ });
+  await expect(coder).toHaveAttribute("aria-pressed", "true");
+  await vision.click();
+  await expect(coder).toHaveAttribute("aria-pressed", "false");
+  await expect(vision).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Run both models")).toHaveCount(0);
   await page.getByLabel("Run note").fill("Repeatable baseline");
+  const submitted = page.waitForRequest(
+    (r) => r.url().endsWith("/api/runs") && r.method() === "POST",
+  );
   await page.getByRole("button", { name: "Queue benchmark" }).click();
+  expect((await submitted).postDataJSON()).toMatchObject({
+    targets: ["vision-26"],
+    mode: "sequential",
+  });
   await expect(
     page.getByRole("heading", { name: "Coding throughput", exact: true }),
   ).toBeVisible();
@@ -108,9 +152,158 @@ test("launch both models, view live logs, cancel, and review rerun", async ({
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   await expect(page.getByText("Cancelled", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Run again" }).click();
+  await expect(page.getByText(/Previous model: Vision model/)).toBeVisible();
+  await expect(vision).toHaveAttribute("aria-pressed", "true");
+});
+test("a changed saved model requires a fresh selection", async ({ page }) => {
+  await page.route("**/api/models", (route) =>
+    route.fulfill({
+      json: {
+        runtime: { ready: true },
+        models: [
+          { ...advertised[0], alias: "daytime", canonical: "New model" },
+          advertised[1],
+        ],
+      },
+    }),
+  );
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Coding throughput", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Run again" }).click();
   await expect(
-    page.getByText(/Review the currently loaded models/),
+    page.getByText(
+      /saved model \(Qwen coding model\) is unavailable or has changed/,
+    ),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Queue benchmark" }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: /Daytime New model/ }).click();
+  await expect(
+    page.getByRole("button", { name: "Queue benchmark" }),
+  ).toBeEnabled();
+});
+test("rerun requires a fresh choice when the same canonical model changes", async ({
+  page,
+}) => {
+  await page.route("**/api/models", (route) =>
+    route.fulfill({
+      json: {
+        runtime: { ready: true },
+        models: [
+          { ...advertised[0], fingerprint: "qwen-replaced-runtime-identity" },
+          advertised[1],
+        ],
+      },
+    }),
+  );
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Coding throughput", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Run again" }).click();
+  await expect(page.getByText(/saved model \(Qwen coding model\) is unavailable or has changed/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Queue benchmark" })).toBeDisabled();
+  await page.getByRole("button", { name: /Qwen-coder Qwen coding model/ }).click();
+  await expect(page.getByRole("button", { name: "Queue benchmark" })).toBeEnabled();
+});
+test("rerun matches the saved canonical model after its alias changes", async ({
+  page,
+}) => {
+  await page
+    .getByRole("button", { name: "Coding throughput", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Run again" }).click();
+  await expect(
+    page.getByText(/Previous model: Qwen coding model/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Qwen-coder Qwen coding model/ }),
+  ).toHaveAttribute("aria-pressed", "true");
+});
+test("rerun waits for refreshed discovery before matching the saved model", async ({
+  page,
+}) => {
+  let current = [{ ...advertised[0], canonical: "Earlier model" }];
+  await page.route("**/api/models", (route) =>
+    route.fulfill({ json: { runtime: { ready: true }, models: current } }),
+  );
+  await page.reload();
+  await expect(page.getByText("1 model · runtime ready")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Coding throughput", exact: true })
+    .click();
+  current = [advertised[0]];
+  await page.getByRole("button", { name: "Run again" }).click();
+  await expect(
+    page.getByRole("button", { name: /Qwen-coder Qwen coding model/ }),
+  ).toHaveAttribute("aria-pressed", "true");
+});
+test("historical multi-model results remain readable and rerun asks for one", async ({
+  page,
+}) => {
+  const historical = structuredClone(completed);
+  historical.requested_targets.push("nighttime");
+  historical.resolved.nighttime = {
+    canonical: "Retired vision model",
+    context: 65536,
+  };
+  historical.summary.nighttime = structuredClone(historical.summary.daytime);
+  historical.summary.nighttime.score = 38;
+  await page.route("**/api/runs", (route) =>
+    route.fulfill({ json: [historical] }),
+  );
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Coding throughput", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Nighttime", exact: true }).click();
+  await expect(page.getByText("Retired vision model")).toBeVisible();
+  await page.getByRole("button", { name: "Run again" }).click();
+  await expect(
+    page.getByText(/This historical run used multiple models/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Queue benchmark" }),
+  ).toBeDisabled();
+});
+test("one and several discovered models use the same single-choice launcher", async ({
+  page,
+}) => {
+  await page.route("**/api/models", (route) =>
+    route.fulfill({
+      json: { runtime: { ready: true }, models: [advertised[0]] },
+    }),
+  );
+  await page.reload();
+  await page
+    .getByRole("button", { name: "New benchmark", exact: true })
+    .click();
+  await expect(page.locator(".bs-model")).toHaveCount(1);
+  await expect(page.locator(".bs-model")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.route("**/api/models", (route) =>
+    route.fulfill({
+      json: {
+        runtime: { ready: true },
+        models: [
+          ...advertised,
+          { ...advertised[0], alias: "third-model", canonical: "Third model" },
+        ],
+      },
+    }),
+  );
+  await page.reload();
+  await page
+    .getByRole("button", { name: "New benchmark", exact: true })
+    .click();
+  await expect(page.locator(".bs-model")).toHaveCount(3);
+  await page.getByRole("button", { name: /Third-model Third model/ }).click();
+  await expect(page.locator('.bs-model[aria-pressed="true"]')).toHaveCount(1);
 });
 test("profiles, keyboard operation, history, artifacts, comparison", async ({
   page,

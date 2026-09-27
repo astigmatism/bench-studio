@@ -427,21 +427,27 @@ class SessionSetup:
                     "detail": "Runtime discovery unavailable: " + str(exc),
                 }
                 continue
+            requested = config.SESSION_SMOKE_TARGET
             model = next(
                 (
-                    m
-                    for m in models
-                    if m["alias"] == config.SESSION_SMOKE_TARGET and m["available"]
+                    m for m in models
+                    if m["available"]
+                    and (suite == "coding-sessions" or m.get("vision") is True)
+                    and (
+                        not requested
+                        or requested in {
+                            m["alias"], m.get("canonical"),
+                            *m.get("resolved", {}).get("metadata", {}).get("aliases", []),
+                        }
+                    )
                 ),
                 None,
             )
-            if not model or (
-                suite != "coding-sessions" and model.get("vision") is not True
-            ):
+            if not model:
                 suites[suite] = {
                     "phase": "waiting_for_model",
-                    "detail": "Waiting for an available "
-                    + config.SESSION_SMOKE_TARGET
+                    "detail": "Waiting for an available"
+                    + (" " + requested if requested else "")
                     + (
                         " model with advertised vision support."
                         if suite != "coding-sessions"
@@ -465,7 +471,7 @@ class SessionSetup:
                 run = launch(
                     Launch(
                         profile=suite,
-                        targets=[config.SESSION_SMOKE_TARGET],
+                        targets=[model["alias"]],
                         task_selection="text-1"
                         if suite == "vision-checks"
                         else "issues-small",

@@ -15,7 +15,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
-from common import now
+from common import now, safe_target
 from . import config, db, discovery, profiles, results
 
 
@@ -133,8 +133,17 @@ def health():
 def models():
     try:
         data = discovery.discover()
-        data.pop("snapshot", None)
-        return data
+        fields = (
+            "alias", "canonical", "available", "context", "gpus",
+            "processing", "reasoning", "vision", "fingerprint", "error",
+        )
+        return {
+            "models": [
+                {key: model[key] for key in fields if key in model}
+                for model in data["models"]
+            ],
+            "runtime": {"ready": bool(data.get("runtime", {}).get("ready"))},
+        }
     except Exception as e:
         return JSONResponse(
             {"models": [], "error": str(e), "runtime": {"ready": False}},
@@ -265,10 +274,6 @@ def launch(body: Launch):
         raise ValueError(
             "Eligibility request ownership is only valid for qualification runs"
         )
-    if body.mode not in ["sequential", "parallel"]:
-        raise ValueError("Invalid execution mode")
-    if len(set(body.targets)) != len(body.targets):
-        raise ValueError("Duplicate targets")
     with db.connect() as c:
         if c.execute(
             "SELECT 1 FROM deleted_runs WHERE idempotency_key=?",
@@ -283,6 +288,8 @@ def launch(body: Launch):
         ).fetchone()
         if prior:
             return db.unpack(prior)
+    if len(body.targets) != 1 or body.mode != "sequential":
+        raise ValueError("A new benchmark runs one selected model sequentially")
     profile = profiles.configure(
         body.profile, body.size, body.overrides, **session_options(body)
     )
@@ -298,18 +305,36 @@ def launch(body: Launch):
                 "Qualification requires one unattended task, one repetition and one model"
             )
         profile["qualification"] = True
-    if profile["family"] in {"session", "vision"} and body.mode != "sequential":
-        raise ValueError("Session and vision suites run models sequentially")
     profile = profiles.attach_manifest(profile)
     data = discovery.discover()
-    available = {m["alias"]: m for m in data["models"] if m["available"]}
-    if any(t not in available for t in body.targets):
+    available = {}
+    for model in data["models"]:
+        if model["available"]:
+            name = model["alias"]
+            available[name] = (
+                model if name not in available or available[name] is model else None
+            )
+    canonical_names = {model["alias"] for model in data["models"]}
+    for model in data["models"]:
+        if not model["available"]:
+            continue
+        resolved = model["resolved"]
+        names = [
+            model.get("canonical"),
+            *resolved.get("metadata", {}).get("aliases", []),
+        ]
+        for name in names:
+            if name and name not in canonical_names and safe_target(name) == name:
+                # Legacy aliases are accepted when unique and cannot shadow a
+                # current canonical selection ID.
+                available[name] = (
+                    model if name not in available or available[name] is model else None
+                )
+    if any(not available.get(t) for t in body.targets):
         raise ValueError("Selected model is no longer available; refresh discovery")
-    selected = {t: available[t]["resolved"] for t in body.targets}
-    if len({r["service"]["container_name"] for r in selected.values()}) != len(
-        selected
-    ):
-        raise ValueError("Targets must use distinct backends")
+    selected = {
+        t: {**available[t]["resolved"], "alias": t} for t in body.targets
+    }
     for r in selected.values():
         from .session_catalog import vision_support
 

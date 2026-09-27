@@ -19,11 +19,14 @@ services:
     pids_limit: 128
     restart: unless-stopped
     ports: ["${BIND_IP:-127.0.0.1}:9001:8080"]
-    volumes: ["./data:/data"]
+    volumes:
+      - type: bind
+        source: "${PROJECT_DIR:?Set PROJECT_DIR to the absolute checkout path}/data"
+        target: /data
     environment:
       DATA_ROOT: /data
-      LLM_ENDPOINT: "${LLM_ENDPOINT:-http://127.0.0.1:11434/v1}"
-      RUNTIME_URL: "${RUNTIME_URL:-http://127.0.0.1:11436/api/status}"
+      LLM_ENDPOINT: "${LLM_ENDPOINT:?Set LLM_ENDPOINT to the router /v1 URL}"
+      RUNTIME_URL: "${RUNTIME_URL:?Set RUNTIME_URL to the runtime /api/status URL}"
     labels:
       io.service-portal.url: "http://${BIND_IP:-127.0.0.1}:9001/"
       io.service-portal.update.enabled: "true"
@@ -45,16 +48,21 @@ services:
     network_mode: host
     group_add: ["${DOCKER_GID:-999}"]
     volumes:
-      - "${PROJECT_DIR:-.}/data:${PROJECT_DIR:-.}/data"
+      - type: bind
+        source: "${PROJECT_DIR:?Set PROJECT_DIR to the absolute checkout path}/data"
+        target: "${PROJECT_DIR:?Set PROJECT_DIR to the absolute checkout path}/data"
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      DATA_ROOT: "${PROJECT_DIR}/data"
-      LLM_ENDPOINT: "${LLM_ENDPOINT}"
-      RUNTIME_URL: "${RUNTIME_URL}"
+      PROJECT_DIR: "${PROJECT_DIR:?Set PROJECT_DIR to the absolute checkout path}"
+      DATA_ROOT: "${PROJECT_DIR:?Set PROJECT_DIR to the absolute checkout path}/data"
+      HOST_UID: "${HOST_UID:-1000}"
+      HOST_GID: "${HOST_GID:-1000}"
+      LLM_ENDPOINT: "${LLM_ENDPOINT:?Set LLM_ENDPOINT to the router /v1 URL}"
+      RUNTIME_URL: "${RUNTIME_URL:?Set RUNTIME_URL to the runtime /api/status URL}"
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "1"
       SESSION_IMAGE: local/bench-studio-session:current
-      SESSION_SMOKE_TARGET: "${SESSION_SMOKE_TARGET:-daytime}"
+      SESSION_SMOKE_TARGET: "${SESSION_SMOKE_TARGET:-}"
     mem_limit: 4g
     cpus: 2
     pids_limit: 256

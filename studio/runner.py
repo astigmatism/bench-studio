@@ -5,18 +5,17 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import time
-from pathlib import Path
 from common import (
     now,
     read_json,
     atomic_json,
-    identity,
+    ModelConfigurationChanged,
+    check_drift,
     resolve,
     require_idle,
+    safe_target,
     snapshot,
-    get_json,
 )
 from . import config, db, results, generation
 
@@ -65,28 +64,32 @@ def record(m):
 def host_evidence(snap):
     from .session_catalog import vision_support
 
+    unavailable = "The router and AI Runtime APIs do not expose this setting"
     evidence = {
         "collected_at": now(),
         "engine_args": {},
+        "engine_args_unavailable": {},
         "backend_defaults": {},
         "vision": {},
     }
-    for service in snap["runtime"]["services"]:
-        d = inspect(service["container_name"])
-        evidence["engine_args"][service["model"]] = (
-            d["Config"].get("Cmd") if d else None
-        )
-    for alias, port in [("daytime", 18080), ("nighttime", 18081)]:
-        try:
-            evidence["backend_defaults"][alias] = get_json(
-                f"http://127.0.0.1:{port}/props"
-            ).get("default_generation_settings", {})
-        except Exception as e:
-            evidence["backend_defaults"][alias] = {"unavailable": str(e)}
+    services = {s["model"]: s for s in snap["runtime"].get("services", [])}
     for row in snap["models"].get("data", []):
         meta = row.get("x_ollama_router", {})
         canonical = meta.get("upstream_model", row["id"])
-        args = evidence["engine_args"].get(canonical) or []
+        service = services.get(canonical, {})
+        exposed_args = service.get("engine_args")
+        args = exposed_args if isinstance(exposed_args, list) else []
+        evidence["engine_args"][canonical] = (
+            args if isinstance(exposed_args, list) else None
+        )
+        if not isinstance(exposed_args, list):
+            evidence["engine_args_unavailable"][canonical] = unavailable
+        defaults = meta.get("default_generation_settings")
+        if defaults is None:
+            defaults = service.get("default_generation_settings")
+        evidence["backend_defaults"][safe_target(row["id"])] = (
+            defaults if isinstance(defaults, dict) else {"unavailable": unavailable}
+        )
 
         def argument(key):
             if key in args and args.index(key) + 1 < len(args):
@@ -104,7 +107,7 @@ def host_evidence(snap):
             "offload": "cpu"
             if "--no-mmproj-offload" in args
             else meta.get("mmproj_offload"),
-            "device": argument("--mmproj-device"),
+            "device": argument("--mmproj-device") or service.get("vision_device"),
             "image_min_tokens": argument("--image-min-tokens"),
             "image_max_tokens": argument("--image-max-tokens"),
             "encoder_latency_ms": None,
@@ -146,7 +149,7 @@ def create_worker(m, role, command, *, target=None, image=None, network="bridge"
         "io.service-portal.hidden=true",
         "--init",
         "--user",
-        "1000:1000",
+        config.WORKER_USER,
         "--read-only",
         "--cap-drop",
         "ALL",
@@ -280,7 +283,7 @@ def start(m, snap):
 
 
 def check_current(m):
-    from common import RuntimeUnavailable, check_drift
+    from common import RuntimeUnavailable
     from urllib.error import URLError
 
     try:
@@ -304,9 +307,6 @@ def check_current(m):
     m.pop("health_unavailable_since", None)
     m.pop("health_warning", None)
     count = snap["runtime"].get("maintenance", {})
-    own = sum(
-        1 for w in m.get("workers", {}).values() if w["role"] in ["generate", "agent"]
-    )
     permitted = len(m["requested_targets"]) if m["mode"] == "parallel" else 1
     if (
         count.get("queued_requests", 0) > 0
@@ -420,7 +420,7 @@ def cycle():
                 log(m, "Cleanup error: " + str(stop_error))
             state = (
                 "invalid"
-                if "changed during" in str(e)
+                if isinstance(e, ModelConfigurationChanged)
                 else ("interrupted" if "disappeared" in str(e) else "failed")
             )
             finish(m, state, e)
@@ -457,22 +457,19 @@ def cycle():
             return
         snap = snapshot(config.SETTINGS)
         for t in m["requested_targets"]:
-            if identity(resolve(snap, t)) != identity(m["resolved"][t]):
-                if m["status"] == "resume_queued":
-                    stop_owned(m)
-                    finish(
-                        m,
-                        "invalid",
-                        "Model/runtime configuration changed during review",
-                    )
-                    return
-                m.update(
-                    status="blocked",
-                    progress="Selected model or configuration changed. Review and run again.",
-                )
-                record(m)
-                return
+            check_drift(m["resolved"][t], resolve(snap, t, require_healthy=False))
         require_idle(snap, m["requested_targets"])
+    except ModelConfigurationChanged:
+        if m["status"] == "resume_queued":
+            stop_owned(m)
+            finish(m, "invalid", "Model/runtime configuration changed during review")
+        else:
+            m.update(
+                status="blocked",
+                progress="Selected model or configuration changed. Review and run again.",
+            )
+            record(m)
+        return
     except Exception as e:
         if m.get("progress") != str(e):
             m["progress"] = str(e)

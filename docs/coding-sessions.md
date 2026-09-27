@@ -14,7 +14,7 @@ Difficulty is separate from sample count. Select all tasks in a tier or one task
 
 **Eligibility checks start only when requested.** Use **Update and restart** on Bench Studio to install the application and build `local/bench-studio-session:current`. This does not run fixture checks or benchmarks. Select **Check eligibility** beside a blocked profile on the New benchmark screen, or open **Profiles → Eligibility**, to validate the projects and acceptance tests offline. Starting from New benchmark always runs offline checks only and preserves the launch settings until preparation finishes. The eligibility check makes no model requests. Once those reference and negative-control checks pass, the three suites are available for normal benchmarks. The selected runtime and vision capabilities are still checked at launch and before inference.
 
-**Model smoke tests are optional benchmark runs, not availability gates.** Select the optional checkbox during preparation, or **Run optional model checks** afterward, to queue one Small unattended task per suite (one screenshot for Vision checks). The default target is `SESSION_SMOKE_TARGET=daytime`. An incorrect answer, malformed output, timeout, or backend error remains visible in that run and never disables prepared profiles. If optional checks are waiting for an unavailable model, they can be stopped without losing preparation. The collapsed Eligibility panel in Profiles distinguishes suite availability from model-check outcomes, shows completed fixture checks during preparation, and reports live response activity.
+**Model smoke tests are optional benchmark runs, not availability gates.** Select the optional checkbox during preparation, or **Run optional model checks** afterward, to queue one Small unattended task per suite (one screenshot for Vision checks). With `SESSION_SMOKE_TARGET` empty, the application selects a currently eligible model; set it to a current alias to pin these checks. An incorrect answer, malformed output, timeout, or backend error remains visible in that run and never disables prepared profiles. If optional checks are waiting for an unavailable model, they can be stopped without losing preparation. The collapsed Eligibility panel in Profiles distinguishes suite availability from model-check outcomes, shows completed fixture checks during preparation, and reports live response activity.
 The earlier updater's existing `build --profile images` and `up reports runner` operations read the newly fetched Compose configuration. The new controller defaults to idle and ignores the retired `SESSION_AUTO_SETUP` setting. It cancels pending jobs owned by the old automatic checks. It does not depend on the old updater reloading Python code partway through its execution.
 
 Offline eligibility checking reserves the same execution lock as updates and benchmark launches. Stop eligibility check terminates its preparation process, cleans up only its owned containers, cancels its queued/active qualifications, and releases that lock after cleanup. Other user runs remain untouched. Explicit requests survive browser closure but are interrupted by controller restart or application update; they never silently replay. Failures retain logs under `data/session-validation/` and require another explicit start. Failed live qualifications can also be opened and retried with **Run again**, preserving qualification mode. Successful preparations are reused while their source, image and protocol remain compatible; optional smoke outcomes remain in history. Incompatible receipts gate the affected suites until you choose to prepare them again.
@@ -34,9 +34,10 @@ Use `--suite coding-sessions`, `--suite vision-checks`, or `--suite visual-desig
 Optionally run a representative model check after preparation:
 
 ```sh
-python scripts/prepare-sessions.py --smoke-target daytime --suite coding-sessions
-python scripts/prepare-sessions.py --smoke-target nighttime --suite vision-checks
-python scripts/prepare-sessions.py --smoke-target daytime --suite visual-design
+# Replace MODEL_ALIAS with a current alias shown by ./bench models.
+python scripts/prepare-sessions.py --smoke-target MODEL_ALIAS --suite coding-sessions
+python scripts/prepare-sessions.py --smoke-target VISION_MODEL_ALIAS --suite vision-checks
+python scripts/prepare-sessions.py --smoke-target VISION_MODEL_ALIAS --suite visual-design
 ```
 
 Set `BENCH_STUDIO_URL` or pass `--url` for a different API address. Qualification uses one small task (one image for Vision checks), unattended, through the durable scheduler and idle gate. A successful, scored attempt records the qualification run. A failed attempt retains evidence and does not change suite availability. These checks exercise the model and adapter together; model success is not an installation requirement.
@@ -75,7 +76,7 @@ Results keep planning, implementation, verification, rendering, compaction, runt
 
 Completed sessions display the number of passed attempts in history and the run header. Attempt outcomes show how many reached verification; failures show the stopping phase, available timing and request-by-request evidence. Successful-attempt timing remains unavailable when nothing passed.
 
-Requests retain actual reported token usage, finish reason, elapsed time and time to first token. When some requests lack usage, known totals are displayed as lower bounds with coverage (reported requests / all requests); exact totals remain unknown. Old run evidence is summarized the same way without rewriting its saved artifacts. Queue timing covers Studio scheduling and review resumption; backend queueing that is not separately exposed remains part of request latency. Vision evidence records advertised capability, observed projector arguments and available provenance. Unknown values stay unknown; time to first token is not reported as encoder-only latency. GPU/model settings stay under AI Runtime control.
+Requests retain actual reported token usage, finish reason, elapsed time and time to first token. When some requests lack usage, known totals are displayed as lower bounds with coverage (reported requests / all requests); exact totals remain unknown. Old run evidence is summarized the same way without rewriting its saved artifacts. Queue timing covers Studio scheduling and review resumption; backend queueing that is not separately exposed remains part of request latency. Vision evidence records advertised capability and available provenance. Projector engine arguments remain unavailable when remote APIs do not expose them. Unknown values stay unknown; time to first token is not reported as encoder-only latency. GPU/model settings stay under AI Runtime control.
 
 Compaction preserves the feature contract, approved plan, feedback and verification state. The proactive text estimate is explicitly approximate; router context admission and reported usage are authoritative. A rejected context triggers one compaction/retry; repeated rejection is a context failure, not an infrastructure error or an unlimited retry. Compaction requests consume the same model-turn and active-time budgets.
 
@@ -84,9 +85,10 @@ Baselines are separated by suite, tier, task selection, repetition count, review
 ## CLI
 
 ```sh
-./bench run daytime --profile coding-sessions --difficulty medium --review-mode unattended
-./bench run nighttime --profile vision-checks --repetitions 3
+./bench models  # Find current model aliases.
+./bench run MODEL_ALIAS --profile coding-sessions --difficulty medium --review-mode unattended
+./bench run VISION_MODEL_ALIAS --profile vision-checks --repetitions 3
 ./bench review RUN_ID
-./bench review RUN_ID --target daytime --attempt issues-small-r1 --revision 1 --action approve
-./bench review RUN_ID --target daytime --attempt issues-small-r1 --revision 2 --action revise --feedback 'Add keyboard navigation to the plan.'
+./bench review RUN_ID --target MODEL_ALIAS --attempt issues-small-r1 --revision 1 --action approve
+./bench review RUN_ID --target MODEL_ALIAS --attempt issues-small-r1 --revision 2 --action revise --feedback 'Add keyboard navigation to the plan.'
 ```

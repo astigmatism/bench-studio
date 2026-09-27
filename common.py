@@ -73,6 +73,10 @@ class RuntimeUnavailable(RuntimeError):
     """A readiness observation, distinct from a changed model identity."""
 
 
+class ModelConfigurationChanged(RuntimeError):
+    """The advertised model or its runtime identity no longer matches a run."""
+
+
 def resolve(snap, target, *, require_healthy=True):
     row = next(
         (
@@ -83,22 +87,24 @@ def resolve(snap, target, *, require_healthy=True):
         None,
     )
     if row is None:
-        raise RuntimeError(f"Model alias {target!r} is absent from discovery")
+        raise ModelConfigurationChanged(
+            f"Model/runtime configuration changed during the run: {target!r} is absent from discovery"
+        )
     meta = row.get("x_ollama_router", {})
     if not meta.get("complete"):
-        raise RuntimeError(f"Model {target} has incomplete metadata")
+        raise ModelConfigurationChanged(f"Model {target} has incomplete metadata")
     if require_healthy and not meta.get("health", {}).get("available"):
         raise RuntimeUnavailable(f"Model {target} is temporarily unavailable")
     context = meta.get("context_window")
     if not isinstance(context, int) or context <= 0:
-        raise RuntimeError(f"Model {target} has no valid context window")
+        raise ModelConfigurationChanged(f"Model {target} has no valid context window")
     canonical = meta.get("upstream_model") or row["id"]
     service = next(
         (s for s in snap["runtime"].get("services", []) if s["model"] == canonical),
         None,
     )
     if not service:
-        raise RuntimeError(f"Model/runtime configuration changed during the run: missing {target}: {canonical}")
+        raise ModelConfigurationChanged(f"Model/runtime configuration changed during the run: missing {target}: {canonical}")
     if require_healthy and (not service.get("healthy") or not service.get("running")):
         raise RuntimeUnavailable(f"Runtime has no healthy service for {target}: {canonical}")
     return {
@@ -129,6 +135,12 @@ def identity(resolved):
     }
 
 
+def model_fingerprint(resolved):
+    """Opaque, stable comparison key for a run's observed model identity."""
+    payload = json.dumps(identity(resolved), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def require_idle(snap, targets, *, all_services=True):
     runtime = snap["runtime"]
     if not runtime.get("ready") or runtime.get("maintenance", {}).get("draining"):
@@ -155,8 +167,8 @@ def check_drift(before, after):
     if (identity(before) != identity(after) or service.get("differences")
         or any(before.get("service", {}).get(k) != service.get(k)
                for k in ("started_at", "restart_count") if k in before.get("service", {}))):
-        raise RuntimeError(
-            f"Model/runtime configuration changed during the run for {before['alias']}"
+        raise ModelConfigurationChanged(
+            f"Model/runtime configuration changed during the run for {before.get('alias', before['canonical'])}"
         )
 
 
@@ -278,20 +290,18 @@ def render_index(root):
         """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <meta http-equiv="refresh" content="15"><title>BetterBench · Historical index</title>
     <style>:root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:1200px;margin:40px auto;padding:0 24px}h1{margin-bottom:8px}p{line-height:1.6;color:light-dark(#495263,#b8c1d0)}table{width:100%;border-collapse:collapse;margin:26px 0}th,td{text-align:left;vertical-align:top;padding:14px 12px;border-bottom:1px solid #8885}small{display:block;margin-top:7px;max-width:470px;overflow-wrap:anywhere;opacity:.8}a{color:light-dark(#1756bf,#9dbdff)}code,pre{font-family:ui-monospace,monospace;font-size:13px}pre{padding:18px;background:#8881;border:1px solid #8884;border-radius:8px;overflow:auto}.good{color:light-dark(#137443,#74d49f)}.bad{color:light-dark(#b02929,#ff9999)}.active{color:light-dark(#73530c,#f5d485)}@media(max-width:700px){body{padding:0 10px}th,td{padding:10px 5px}code{font-size:11px}}</style>
-    <h1>BetterBench</h1><p>Local inference performance. Reports measure speed and latency, not answer correctness.
+    <h1>BetterBench</h1><p>Router inference performance. Reports measure speed and latency, not answer correctness.
     Smoke runs are installation checks. The page refreshes every 15 seconds; use Bench Studio or its CLI for live status, logs and stopping.</p>
     <table><thead><tr><th>Run</th><th>Workload</th><th>Status</th><th>Results</th></tr></thead><tbody>"""
         + body
         + """</tbody></table>
     <h2>Run a benchmark</h2><pre>./bench models
-    ./bench run daytime --profile coding
-    ./bench run nighttime --profile standard
-    ./bench run both --profile smoke
-    ./bench run both --profile coding --parallel
+    ./bench run MODEL_ALIAS --profile smoke
+    ./bench run MODEL_ALIAS --profile coding
     ./bench status
     ./bench logs RUN_ID
     ./bench stop RUN_ID</pre>
-    <p>Profiles: smoke, coding, standard, prefill, prefill-smoke. Concurrency is one request per model. Each run resolves the current AI Runtime models.
+    <p>Profiles: smoke, coding, standard, prefill, prefill-smoke. Each new run selects one current AI Runtime model.
     An interrupted phase may have logs without a report; completed phases remain available.</p></html>"""
     )
     return page

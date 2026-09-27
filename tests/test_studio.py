@@ -2,7 +2,7 @@ import copy, json, importlib.util
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
-from common import atomic_json, now, identity
+from common import atomic_json, now, identity, model_fingerprint
 from studio import config, db, profiles, results, runner
 from studio.api import app
 
@@ -106,16 +106,198 @@ def test_csrf_and_maintenance(client):
     assert launch(c).status_code == 409
 
 
+def test_public_models_omit_runtime_token_and_private_snapshots(client, monkeypatch):
+    c, resolved, _ = client
+    monkeypatch.setattr(
+        "studio.discovery.discover",
+        lambda: {
+            "models": [{
+                "alias": "model-a", "canonical": "model-a", "available": True,
+                "context": 163840, "gpus": ["GPU A"], "processing": False,
+                "reasoning": {}, "vision": False, "resolved": resolved,
+                "identity": {"container_id": "remote-private"},
+                "fingerprint": model_fingerprint(resolved),
+            }],
+            "runtime": {
+                "ready": True, "csrf_token": "private-token",
+                "services": [{"container_name": "remote-private"}],
+            },
+            "snapshot": {"private": "snapshot"},
+        },
+    )
+    response = c.get("/api/models")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime"] == {"ready": True}
+    assert body["models"][0]["alias"] == "model-a"
+    assert body["models"][0]["fingerprint"] == model_fingerprint(resolved)
+    assert "private-token" not in response.text
+    assert "remote-private" not in response.text
+    assert "resolved" not in body["models"][0]
+
+
+def test_rerun_fingerprint_detects_same_canonical_replacement(client):
+    c, resolved, _ = client
+    rid = launch(c).json()["id"]
+    saved = c.get(f"/api/runs/{rid}").json()["model_fingerprints"]["daytime"]
+    assert saved == model_fingerprint(resolved)
+    replacement = copy.deepcopy(resolved)
+    replacement["service"]["image_id"] = "new-image"
+    assert replacement["canonical"] == resolved["canonical"]
+    assert model_fingerprint(replacement) != saved
+
+
+def test_new_launch_is_one_model_and_legacy_alias_remains_accepted(client, monkeypatch):
+    c, resolved, _ = client
+    canonical = {**resolved, "alias": "model-a", "metadata": {
+        **resolved["metadata"], "aliases": ["daytime", "local-active"],
+    }}
+    monkeypatch.setattr(
+        "studio.discovery.discover",
+        lambda: {"models": [{
+            "alias": "model-a", "canonical": "model-a", "available": True,
+            "resolved": canonical,
+        }]},
+    )
+    selected = launch(c, targets=["model-a"])
+    assert selected.status_code == 202
+    assert selected.json()["resolved"]["model-a"]["canonical"] == "model-a"
+    legacy = launch(c, idempotency_key="legacy-alias-request", targets=["daytime"])
+    assert legacy.status_code == 202
+    assert legacy.json()["resolved"]["daytime"]["alias"] == "daytime"
+    multi = launch(c, idempotency_key="new-multi-request", targets=["model-a", "daytime"])
+    assert multi.status_code == 400
+    assert launch(c, idempotency_key="new-parallel-request", mode="parallel").status_code == 400
+    prior = legacy.json()
+    prior.update(requested_targets=["daytime", "nighttime"], mode="parallel")
+    db.update_run(prior)
+    retry = launch(
+        c, idempotency_key="legacy-alias-request",
+        targets=["daytime", "nighttime"], mode="parallel",
+    )
+    assert retry.status_code == 202 and retry.json()["id"] == prior["id"]
+
+
+def test_canonical_selection_wins_over_conflicting_legacy_alias(client, monkeypatch):
+    c, resolved, _ = client
+    first = {**resolved, "metadata": {
+        **resolved["metadata"], "aliases": ["second-model"],
+    }}
+    second = {**resolved, "alias": "second-model", "canonical": "second-model"}
+    monkeypatch.setattr(
+        "studio.discovery.discover",
+        lambda: {"models": [
+            {"alias": "model-a", "canonical": "model-a", "available": True, "resolved": first},
+            {"alias": "second-model", "canonical": "second-model", "available": True, "resolved": second},
+        ]},
+    )
+    response = launch(c, targets=["second-model"])
+    assert response.status_code == 202
+    assert response.json()["resolved"]["second-model"]["canonical"] == "second-model"
+    monkeypatch.setattr(
+        "studio.discovery.discover",
+        lambda: {"models": [
+            {"alias": "model-a", "canonical": "model-a", "available": True, "resolved": first},
+            {"alias": "second-model", "canonical": "second-model", "available": False},
+        ]},
+    )
+    unavailable = launch(c, idempotency_key="unavailable-canonical", targets=["second-model"])
+    assert unavailable.status_code == 400
+
+
+def test_historical_multi_model_runs_remain_readable_when_discovery_fails(client, monkeypatch):
+    c, resolved, _ = client
+    old = launch(c).json()
+    old["status"] = "completed"
+    old["requested_targets"] = ["daytime", "nighttime"]
+    old["resolved"]["nighttime"] = {
+        **resolved, "alias": "nighttime", "canonical": "model-b",
+    }
+    db.update_run(old)
+    newer = launch(c, idempotency_key="another-historical-run").json()
+    newer["status"] = "completed"
+    db.update_run(newer)
+    for run in (old, newer):
+        for target in run["requested_targets"]:
+            atomic_json(
+                config.DATA / "runs" / run["id"] / target / "result.json",
+                {"score": 20.0, "metric": "decode_tps", "unit": "tok/s"},
+            )
+    monkeypatch.setattr(
+        "studio.discovery.discover",
+        lambda: (_ for _ in ()).throw(RuntimeError("router offline")),
+    )
+    history = c.get("/api/runs")
+    detail = c.get(f"/api/runs/{old['id']}")
+    comparison = c.get(
+        "/api/compare",
+        params={"a": old["id"], "b": newer["id"], "ta": "daytime", "tb": "daytime"},
+    )
+    assert history.status_code == detail.status_code == comparison.status_code == 200
+    assert set(detail.json()["summary"]) == {"daytime", "nighttime"}
+    assert detail.json()["summary"]["nighttime"]["canonical"] == "model-b"
+
+
 def test_snapshot_and_queued_drift(client, monkeypatch):
     c, resolved, snap = client
     rid = launch(c).json()["id"]
     after = copy.deepcopy(resolved)
     after["context"] = 8192
     monkeypatch.setattr(runner, "snapshot", lambda _: snap)
-    monkeypatch.setattr(runner, "resolve", lambda *_: after)
+    monkeypatch.setattr(runner, "resolve", lambda *_, **__: after)
     runner.cycle()
     assert db.get_run(rid)["status"] == "blocked"
     assert db.get_run(rid)["resolved"]["daytime"]["context"] == 163840
+
+
+def test_queued_and_active_runs_detect_canonical_replacement(client, monkeypatch):
+    c, resolved, snap = client
+    queued = launch(c).json()
+    active = launch(c, idempotency_key="active-replacement").json()
+    active.update(status="running", workers={})
+    db.update_run(active)
+    replacement = copy.deepcopy(resolved)
+    replacement["canonical"] = "model-b"
+    monkeypatch.setattr(runner, "snapshot", lambda _: snap)
+    monkeypatch.setattr(runner, "resolve", lambda *_, **__: replacement)
+    stopped = []
+    monkeypatch.setattr(runner, "stop_owned", lambda m: stopped.append(m["id"]))
+    runner.cycle()
+    assert db.get_run(active["id"])["status"] == "invalid"
+    assert stopped == [active["id"]]
+    assert db.get_run(queued["id"])["status"] == "blocked"
+
+
+def test_remote_evidence_uses_only_router_and_runtime_responses(client, monkeypatch):
+    c, resolved, _ = client
+    canonical = resolved["canonical"]
+    snap = {
+        "runtime": {"services": [{
+            "model": canonical, "container_name": "remote-model-container",
+            "vision_device": "GPU 1",
+        }]},
+        "models": {"data": [{"id": canonical, "x_ollama_router": {
+            "upstream_model": canonical, "capabilities": ["vision"],
+            "input_modalities": ["text", "image"],
+        }}]},
+    }
+    inspected = []
+    monkeypatch.setattr(
+        runner, "inspect",
+        lambda name: (inspected.append(name) or {"Image": "sha256:runner"}),
+    )
+
+    class Image:
+        returncode = 0
+        stdout = "sha256:local-image\n"
+
+    monkeypatch.setattr(runner, "docker", lambda *a, **k: Image())
+    evidence = runner.host_evidence(snap)
+    assert inspected == ["bench-studio-runner"]
+    assert evidence["engine_args"][canonical] is None
+    assert canonical in evidence["engine_args_unavailable"]
+    assert "unavailable" in evidence["backend_defaults"][canonical]
+    assert evidence["vision"][canonical]["device"] == "GPU 1"
 
 
 def test_busy_queue_does_not_launch(client, monkeypatch):
@@ -319,6 +501,29 @@ def test_arbitrary_provider_names_are_safe_and_resolve():
     assert resolve(snap, target)["canonical"] == name
 
 
+def compose_config_json(root):
+    data = str(root / "data")
+    return json.dumps({
+        "services": {
+            "reports": {
+                "environment": {"DATA_ROOT": "/data"},
+                "user": "1000:1000",
+                "volumes": [{"type": "bind", "source": data, "target": "/data"}],
+            },
+            "runner": {
+                "environment": {
+                    "DATA_ROOT": data,
+                    "PROJECT_DIR": str(root),
+                    "HOST_UID": "1000",
+                    "HOST_GID": "1000",
+                },
+                "user": "1000:1000",
+                "volumes": [{"type": "bind", "source": data, "target": data}],
+            },
+        }
+    })
+
+
 @pytest.mark.parametrize("restore_failure", [False, True])
 def test_updater_failure_preserves_database_and_clears_maintenance(
     client, monkeypatch, tmp_path, restore_failure
@@ -341,6 +546,8 @@ def test_updater_failure_preserves_database_and_clears_maintenance(
 
     def run(*args, **kw):
         calls.append(args)
+        if args == ("docker", "compose", "config", "--format", "json"):
+            return subprocess.CompletedProcess(args, 0, compose_config_json(root), "")
         if (
             args[:4] == ("docker", "compose", "--profile", "images")
             and args[-1] == "build"
@@ -385,6 +592,8 @@ def test_updater_rejects_divergence_and_failed_health(
 
     def run(*args, **kw):
         calls.append(args)
+        if args == ("docker", "compose", "config", "--format", "json"):
+            return subprocess.CompletedProcess(args, 0, compose_config_json(root), "")
         if failure == "health" and args[:3] == ("docker", "compose", "up"):
             raise RuntimeError("health failed")
         code = (
@@ -527,6 +736,14 @@ def test_generation_records_defaults_overrides_and_native_workload_budgets(clien
     assert evidence["request_overrides"]["max_tokens"] == 2048
     assert evidence["reasoning"] == "none"
     assert evidence["output_budgets_by_workload"] == {}
+    run["host"]["backend_defaults"]["daytime"] = {
+        "unavailable": "Remote APIs do not expose backend defaults"
+    }
+    evidence = snapshot(run)["daytime"]
+    assert evidence["backend_defaults_available"] is False
+    assert evidence["effective_sampling"]["max_tokens"] == 2048
+    assert "top_k" not in evidence["effective_sampling"]
+    assert "unspecified sampling settings are unknown" in evidence["basis"]
 
 
 def test_repository_preflight_rejects_unusable_verifier_before_inference(
@@ -609,12 +826,23 @@ def test_worker_uses_captured_image_identity_instead_of_mutable_tag(
     m = launch(c).json()
     m["host"] = {"worker_image": "sha256:captured-image"}
     calls = []
+    monkeypatch.setattr(config, "WORKER_USER", "1234:2345")
     monkeypatch.setattr(runner, "inspect", lambda name: None)
     monkeypatch.setattr(runner, "docker", lambda *a: calls.append(a))
     runner.create_worker(m, "generate", ["python", "/app/worker.py"])
     assert "sha256:captured-image" in calls[0]
     assert config.WORKER_IMAGE not in calls[0]
+    assert calls[0][calls[0].index("--user") + 1] == "1234:2345"
     assert calls[1][0] == "start"
+
+
+def test_host_ids_reject_non_numeric_values(monkeypatch):
+    monkeypatch.setenv("HOST_UID", "42")
+    assert config.host_id("HOST_UID") == "42"
+    for value in ("", "1:2", "-1", "999999999999999999999"):
+        monkeypatch.setenv("HOST_UID", value)
+        with pytest.raises(ValueError, match="HOST_UID"):
+            config.host_id("HOST_UID")
 
 
 def finished_run(c, status, key):
