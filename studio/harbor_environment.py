@@ -1,6 +1,7 @@
 """A Harbor Docker environment with static, fail-closed network isolation."""
 
 import json
+import os
 from pathlib import Path
 from harbor.environments.docker.docker import DockerEnvironment
 from harbor.models.task.config import NetworkMode
@@ -28,6 +29,7 @@ class IsolatedDocker(DockerEnvironment):
                             "pids_limit": 512,
                             "labels": {
                                 "io.bench-studio.run": run_id,
+                                "io.bench-studio.project": os.environ.get("PROJECT_DIR", "/app"),
                                 "io.service-portal.hidden": "true",
                             },
                         }

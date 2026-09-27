@@ -375,6 +375,7 @@ class SessionSetup:
                     env=dict(
                         os.environ,
                         STUDIO_PREPARATION_OWNER=self.owner,
+                        STUDIO_PREPARATION_REQUEST_ID=self.request_id,
                         STUDIO_PREPARATION_PROGRESS=str(progress_path),
                         STUDIO_CONTROLLER_PID=str(os.getpid()),
                     ),

@@ -33,6 +33,7 @@ services:
       io.service-portal.update.script: "scripts/update-and-restart.sh"
       io.service-portal.update.image: "local/bench-studio-updater:current"
       io.service-portal.update.user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+      io.service-portal.lifecycle.services: "reports,runner"
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=3).read()"]
       interval: 10s

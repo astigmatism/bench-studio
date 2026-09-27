@@ -18,7 +18,7 @@ ACTIVE = {"starting", "running", "stopping"}
 
 
 def now():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def read_json(path):

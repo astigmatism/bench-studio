@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -51,7 +52,10 @@ def task_variants(task):
 
 def ownership():
     owner = os.environ.get("STUDIO_PREPARATION_OWNER")
-    return ["--label", "io.bench-studio.preparation=" + owner] if owner else []
+    labels = ["--label", "io.bench-studio.project=" + os.environ.get("PROJECT_DIR", str(config.ROOT))]
+    if owner:
+        labels.extend(["--label", "io.bench-studio.preparation=" + owner])
+    return labels
 
 
 def archive(project, out):
@@ -136,9 +140,14 @@ print(json.dumps(result))
         raise RuntimeError(
             "Prepared image sources are stale; rebuild without --no-build"
         )
-    validation = (
-        config.DATA / "session-validation" / ("prepare-" + uuid.uuid4().hex[:10])
-    )
+    owner = os.environ.get("STUDIO_PREPARATION_OWNER")
+    request_id = os.environ.get("STUDIO_PREPARATION_REQUEST_ID")
+    if owner and request_id:
+        if not all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", part) for part in (owner, request_id)):
+            raise RuntimeError("Unsafe preparation owner or request ID")
+        validation = config.DATA / "session-validation" / owner / request_id / "validation"
+    else:
+        validation = config.DATA / "session-validation" / ("prepare-" + uuid.uuid4().hex[:10])
     validation.mkdir(parents=True)
     spec = importlib.util.spec_from_file_location(
         "reference", ROOT / "solutions/reference.py"

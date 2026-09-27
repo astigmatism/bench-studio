@@ -146,6 +146,8 @@ def create_worker(m, role, command, *, target=None, image=None, network="bridge"
         "--label",
         f"{MANAGED}={m['id']}",
         "--label",
+        "io.bench-studio.project=" + os.environ.get("PROJECT_DIR", str(config.ROOT)),
+        "--label",
         "io.service-portal.hidden=true",
         "--init",
         "--user",

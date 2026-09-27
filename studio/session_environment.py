@@ -49,6 +49,8 @@ async def verify_candidate(
         name,
         "--label",
         "io.bench-studio.run=" + run_id,
+        "--label",
+        "io.bench-studio.project=" + os.environ.get("PROJECT_DIR", str(config.ROOT)),
         *(
             [
                 "--label",
