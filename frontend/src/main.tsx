@@ -77,6 +77,11 @@ const date = (s: string) =>
     minute: "2-digit",
   });
 const label = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : "");
+const reasoningEffort = (run: Obj) => {
+  const e = run.profile_spec?.parameters?.reasoning_effort;
+  if (!e) return "";
+  return e === "default" ? "Runtime default" : label(e);
+};
 const elapsed = (r: Obj) => {
   if (!r.started_at) return "Not started";
   const v = Math.max(
@@ -539,6 +544,7 @@ function App() {
                     r.requested_targets.map((t: string, index: number) => {
                       const s = r.summary?.[t] || {};
                       const count = r.requested_targets.length;
+                      const effort = reasoningEffort(r);
                       return (
                         <tr key={`${r.id}:${t}`}>
                           {index === 0 && (
@@ -579,6 +585,11 @@ function App() {
                             <div className="bs-small">
                               {r.resolved?.[t]?.canonical || t}
                             </div>
+                            {effort && (
+                              <div className="bs-small">
+                                Reasoning: {effort}
+                              </div>
+                            )}
                           </td>
                           <td>
                             <PerformanceCell

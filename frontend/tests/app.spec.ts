@@ -743,3 +743,20 @@ test("a history refresh started before deletion cannot restore deleted rows", as
     page.getByLabel("Select all runs", { exact: true }),
   ).toBeDisabled();
 });
+test("run history shows the recorded reasoning effort in the model column", async ({
+  page,
+}) => {
+  await expect(
+    page.getByText("Reasoning: Runtime default", { exact: true }),
+  ).toBeVisible();
+  const medium = structuredClone(completed);
+  medium.profile_spec.parameters.reasoning_effort = "medium";
+  await page.route("**/api/runs", (route) => route.fulfill({ json: [medium] }));
+  await page.reload();
+  await expect(page.getByText("Reasoning: Medium", { exact: true })).toBeVisible();
+  const legacy = structuredClone(medium);
+  delete legacy.profile_spec.parameters;
+  await page.route("**/api/runs", (route) => route.fulfill({ json: [legacy] }));
+  await page.reload();
+  await expect(page.getByText("Reasoning:")).toHaveCount(0);
+});
