@@ -625,3 +625,126 @@ def test_coding_preparation_keeps_committed_manifest_clean(tmp_path, monkeypatch
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(RuntimeError, match="Dataset digest mismatch"):
         runpy.run_path(str(script))
+
+
+def git_in(cwd, *args):
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+@pytest.fixture
+def check_checkout(tmp_path, monkeypatch):
+    """A deployment clone of a local bare upstream, wired into the updater."""
+    for key, value in {
+        "GIT_AUTHOR_NAME": "Tester",
+        "GIT_AUTHOR_EMAIL": "tester@example.invalid",
+        "GIT_COMMITTER_NAME": "Tester",
+        "GIT_COMMITTER_EMAIL": "tester@example.invalid",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("SERVICE_PORTAL_DEPLOYED_REVISION", raising=False)
+    upstream = tmp_path / "upstream.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(upstream))
+    git_in(upstream, "symbolic-ref", "HEAD", "refs/heads/main")
+    seed = tmp_path / "seed"
+    git_in(tmp_path, "clone", "-q", str(upstream), str(seed))
+    git_in(seed, "checkout", "-q", "-B", "main")
+    (seed / ".gitignore").write_text("data/\n")
+    (seed / "app.txt").write_text("1\n")
+    git_in(seed, "add", ".")
+    git_in(seed, "commit", "-q", "-m", "Initial release")
+    git_in(seed, "push", "-q", "origin", "main")
+    checkout = tmp_path / "checkout"
+    git_in(tmp_path, "clone", "-q", str(upstream), str(checkout))
+    mod = updater_module()
+    monkeypatch.setattr(mod, "ROOT", checkout)
+    monkeypatch.setattr(mod, "UPSTREAM", str(upstream))
+    monkeypatch.setattr(mod, "EXPECTED", {str(upstream)})
+
+    def publish(*subjects):
+        for subject in subjects:
+            (seed / "app.txt").write_text(subject + "\n")
+            git_in(seed, "commit", "-q", "-am", subject)
+        git_in(seed, "push", "-q", "origin", "main")
+        return git_in(seed, "rev-parse", "HEAD")
+
+    return types.SimpleNamespace(mod=mod, checkout=checkout, publish=publish)
+
+
+def check_lines(capsys):
+    out = capsys.readouterr().out.splitlines()
+    summary = [line for line in out if line.startswith("service-portal-check: ")]
+    assert len(summary) == 1, out
+    return summary[0], out
+
+
+def test_portal_check_reports_current_without_changing_anything(
+    check_checkout, capsys, monkeypatch
+):
+    head = git_in(check_checkout.checkout, "rev-parse", "HEAD")
+    monkeypatch.setenv("SERVICE_PORTAL_DEPLOYED_REVISION", head[:12])
+    check_checkout.mod.check()
+    summary, out = check_lines(capsys)
+    assert summary == f"service-portal-check: status=current behind=0 deployed={head} target={head}"
+    assert not any(line.startswith("service-portal-check-commit:") for line in out)
+    assert not git_in(check_checkout.checkout, "status", "--porcelain")
+
+
+def test_portal_check_lists_pending_commits_without_merging(
+    check_checkout, capsys, monkeypatch
+):
+    deployed = git_in(check_checkout.checkout, "rev-parse", "HEAD")
+    target = check_checkout.publish("Add reports", "Fix scoring")
+    monkeypatch.setenv("SERVICE_PORTAL_DEPLOYED_REVISION", deployed)
+    check_checkout.mod.check()
+    summary, out = check_lines(capsys)
+    assert summary == (
+        f"service-portal-check: status=available behind=2 deployed={deployed} target={target}"
+    )
+    commits = [line for line in out if line.startswith("service-portal-check-commit: ")]
+    assert len(commits) == 2
+    assert commits[0].startswith(f"service-portal-check-commit: {target} ")
+    assert commits[0].endswith(" Fix scoring") and commits[1].endswith(" Add reports")
+    assert git_in(check_checkout.checkout, "rev-parse", "HEAD") == deployed
+    assert git_in(check_checkout.checkout, "rev-parse", "origin/main") == target
+    assert not git_in(check_checkout.checkout, "status", "--porcelain")
+
+
+def test_portal_check_falls_back_to_head_and_flags_unknown_revisions(
+    check_checkout, capsys, monkeypatch
+):
+    head = git_in(check_checkout.checkout, "rev-parse", "HEAD")
+    target = check_checkout.publish("Next")
+    check_checkout.mod.check()
+    summary, out = check_lines(capsys)
+    assert "service-portal-check-note: The running image does not record" in out[0]
+    assert summary == f"service-portal-check: status=available behind=1 deployed={head} target={target}"
+
+    monkeypatch.setenv("SERVICE_PORTAL_DEPLOYED_REVISION", "f" * 40)
+    check_checkout.mod.check()
+    summary, out = check_lines(capsys)
+    assert summary == (
+        f"service-portal-check: status=available behind=unknown deployed=unknown target={target}"
+    )
+
+
+def test_portal_check_refuses_dirty_divergent_and_busy_checkouts(check_checkout):
+    mod, checkout = check_checkout.mod, check_checkout.checkout
+    (checkout / "app.txt").write_text("local edit\n")
+    with pytest.raises(RuntimeError, match="Refusing dirty checkout"):
+        mod.check()
+    git_in(checkout, "checkout", "-q", "--", "app.txt")
+
+    git_in(checkout, "commit", "-q", "--allow-empty", "-m", "Unpublished")
+    with pytest.raises(RuntimeError, match="Refusing divergent"):
+        mod.check()
+    git_in(checkout, "reset", "-q", "--hard", "origin/main")
+
+    import fcntl
+
+    (checkout / "data").mkdir(exist_ok=True)
+    with (checkout / "data" / ".lifecycle.lock").open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="lifecycle action is running"):
+            mod.check()

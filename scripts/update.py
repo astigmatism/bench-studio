@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service Portal entrypoint for update, start, and scoped stop operations."""
+"""Service Portal entrypoint for update, start, scoped stop, and update checks."""
 
 import contextlib
 import datetime
@@ -20,6 +20,8 @@ EXPECTED = {
     "https://github.com/astigmatism/bench-studio.git",
     "https://github.com/astigmatism/bench-studio",
 }
+# Fetched over HTTPS so the detached runner needs no SSH key.
+UPSTREAM = "https://github.com/astigmatism/bench-studio.git"
 TERMINAL = ("completed", "failed", "interrupted", "invalid", "cancelled")
 SERVICES = ("reports", "runner")
 
@@ -444,6 +446,16 @@ def preflight():
     for tool in ["git", "docker", "python3"]:
         if not shutil.which(tool):
             raise RuntimeError("Missing required executable: " + tool)
+    source_preflight()
+    if not (ROOT / "compose.yaml").exists():
+        raise RuntimeError("Missing compose.yaml")
+    runtime_preflight()
+
+
+def source_preflight():
+    """Git rules shared by updates and Service Portal update checks."""
+    if not shutil.which("git"):
+        raise RuntimeError("Missing required executable: git")
     if run("git", "status", "--porcelain").stdout.strip():
         raise RuntimeError(
             "Refusing dirty checkout; preserve and commit local changes first"
@@ -462,9 +474,6 @@ def preflight():
         != "origin/main"
     ):
         raise RuntimeError("Refusing unexpected upstream; expected origin/main")
-    if not (ROOT / "compose.yaml").exists():
-        raise RuntimeError("Missing compose.yaml")
-    runtime_preflight()
 
 
 def _deploy_locked():
@@ -514,12 +523,7 @@ def _deploy_locked():
         try:
             before = run("git", "rev-parse", "HEAD").stdout.strip()
             print("Fetching public upstream", flush=True)
-            run(
-                "git",
-                "fetch",
-                "https://github.com/astigmatism/bench-studio.git",
-                "main:refs/remotes/origin/main",
-            )
+            run("git", "fetch", UPSTREAM, "main:refs/remotes/origin/main")
             ahead = (
                 run(
                     "git",
@@ -649,6 +653,76 @@ def deploy():
         _deploy_locked()
 
 
+def check():
+    """Service Portal update check: report whether an update would deploy a
+    different revision than the one running, without changing the working
+    tree, the database, or any container. Fetching origin/main is allowed.
+
+    The portal passes the running image's org.opencontainers.image.revision
+    as SERVICE_PORTAL_DEPLOYED_REVISION (empty when unknown) and reads the
+    service-portal-check lines printed here."""
+    with lifecycle_lock():
+        source_preflight()
+        run("git", "fetch", UPSTREAM, "main:refs/remotes/origin/main")
+        head = run("git", "rev-parse", "HEAD").stdout.strip()
+        target = run("git", "rev-parse", "origin/main").stdout.strip()
+
+        def ancestor(older, newer):
+            return run(
+                "git", "merge-base", "--is-ancestor", older, newer, check=False
+            ).returncode == 0
+
+        if not ancestor(head, target):
+            raise RuntimeError(
+                "Refusing divergent, rewritten, or unpublished local history"
+            )
+
+        def report(status, behind, deployed):
+            print(
+                f"service-portal-check: status={status} behind={behind}"
+                f" deployed={deployed} target={target}",
+                flush=True,
+            )
+
+        deployed = os.environ.get("SERVICE_PORTAL_DEPLOYED_REVISION", "").strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", deployed):
+            print(
+                "service-portal-check-note: The running image does not record its"
+                " source revision; compared with the checkout HEAD.",
+                flush=True,
+            )
+            deployed = head
+        elif run("git", "cat-file", "-e", deployed + "^{commit}", check=False).returncode:
+            print(
+                "service-portal-check-note: The running revision is not in this checkout.",
+                flush=True,
+            )
+            report("available", "unknown", "unknown")
+            return
+        else:
+            deployed = run("git", "rev-parse", deployed + "^{commit}").stdout.strip()
+
+        if deployed == target:
+            report("current", 0, deployed)
+        elif ancestor(deployed, target):
+            span = deployed + ".." + target
+            behind = run("git", "rev-list", "--count", span).stdout.strip()
+            commits = run(
+                "git", "log", "-n", "10",
+                "--format=service-portal-check-commit: %H %cI %s", span,
+            ).stdout
+            if commits.strip():
+                print(commits.rstrip("\n"), flush=True)
+            report("available", behind, deployed)
+        else:
+            print(
+                "service-portal-check-note: The running revision is not an ancestor"
+                " of origin/main.",
+                flush=True,
+            )
+            report("available", "unknown", deployed)
+
+
 if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["--check-config"]:
@@ -660,8 +734,10 @@ if __name__ == "__main__":
             start()
         elif sys.argv[1:] == ["stop"]:
             stop()
+        elif sys.argv[1:] == ["check"]:
+            check()
         else:
-            raise RuntimeError("Usage: update.py [--check-config|start|stop]")
+            raise RuntimeError("Usage: update.py [--check-config|start|stop|check]")
     except Exception as e:
         print("Error: " + str(e), file=sys.stderr, flush=True)
         sys.exit(1)
