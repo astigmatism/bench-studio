@@ -1,6 +1,8 @@
 # Performance measurements
 
-Run summaries expose an additive `performance` object in list, detail, and comparison responses. Existing scores, baseline keys, and comparison eligibility retain their meanings. `studio/performance.py` builds projections from saved request evidence without changing raw artifacts. A history snapshot summarizes each run once, then groups and sorts eligible metric values in memory; baseline enrichment reuses those summaries.
+Run summaries expose an additive `performance` object in list, detail, and comparison responses. Existing scores, baseline keys, and comparison eligibility retain their meanings. `studio/performance.py` builds projections from saved request evidence without changing raw artifacts. A history snapshot summarizes each run once, then groups and sorts eligible metric values in memory; baseline enrichment reuses those summaries. The reports service keeps each run's summary in memory and recomputes it only when the run document, or any file in its run directory, changes. Rankings, previous-run changes, and baselines are recalculated on every request.
+
+`GET /api/runs` returns history rows: scores, rankings, baselines, and run settings, without task rows (`summary[target].tasks`), artifact lists, reviews, or detail-only run fields (`host`, `generation`, `session_progress`, `repository_tasks`). `GET /api/runs/{id}` returns the complete run. API task evidence omits the raw per-update and per-token latency series (`update_gaps_ms`, `itl_ms`); their metrics are computed before omission, and the series remain in the run's artifacts and ZIP export.
 
 The headline values are medians over eligible requests, not token-weighted averages:
 

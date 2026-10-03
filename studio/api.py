@@ -426,7 +426,7 @@ def baseline(rid: str, body: Baseline):
     m = require_run(rid)
     if m["status"] != "completed":
         raise ValueError("Only completed runs can become baselines")
-    result = results.summarize(m).get(body.target)
+    result = results.cached_summaries(m)[0].get(body.target)
     if not result or result.get("score") is None:
         raise ValueError("No valid score for selected target")
     slot = results.baseline_slot(m, body.target)
@@ -536,12 +536,22 @@ def export(rid: str):
 @app.get("/api/events")
 async def events(request: Request):
     try:
-        cursor = int(request.headers.get("last-event-id", "0"))
-    except ValueError:
-        cursor = 0
+        cursor = int(request.headers["last-event-id"])
+    except (KeyError, ValueError):
+        cursor = None
 
     async def stream():
         nonlocal cursor
+        if cursor is None:
+            # A new client has just loaded current state. Replaying the whole
+            # event log would only trigger redundant reloads, so start at the
+            # end. The marker sets the reconnect cursor and triggers one refresh
+            # covering changes made while the stream was connecting.
+            with db.connect() as c:
+                cursor = c.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM events"
+                ).fetchone()[0]
+            yield f"id: {cursor}\ndata: {db.pack({'type': 'connected'})}\n\n"
         while not await request.is_disconnected():
             with db.connect() as c:
                 rows = c.execute(

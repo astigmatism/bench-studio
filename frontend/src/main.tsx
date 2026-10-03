@@ -200,26 +200,59 @@ function App() {
     [connection, setConnection] = useState(true),
     [setupBusy, setSetupBusy] = useState<"start" | "stop" | null>(null),
     [setupSmoke, setSetupSmoke] = useState(false),
-    [refresh, setRefresh] = useState(0);
+    [refresh, setRefresh] = useState(0),
+    [loads, setLoads] = useState(0),
+    [detailRun, setDetailRun] = useState<Obj | null>(null);
   const setupSubmission = useRef<string | null>(null);
   const historyVersion = useRef(0);
+  const loadSequence = useRef(0);
+  const appliedLoad = useRef(0);
+  const backgroundLoading = useRef(false);
+  const backgroundPending = useRef(false);
+  const detailRequest = useRef(0);
   const load = useCallback(async () => {
     const version = historyVersion.current;
+    const sequence = ++loadSequence.current;
     try {
-      const latest = await api("/runs");
-      if (version !== historyVersion.current) return;
+      const [latest, nextHealth, nextProfiles] = await Promise.all([
+        api("/runs"),
+        api("/health"),
+        api("/profiles"),
+      ]);
+      // Ignore responses from before a deletion, or older than one shown.
+      if (version !== historyVersion.current || sequence < appliedLoad.current)
+        return;
+      appliedLoad.current = sequence;
       setRuns(latest);
       setSelected((ids) =>
         ids.filter((id) =>
           latest.some((r: Obj) => r.id === id && terminal.has(r.status)),
         ),
       );
-      setHealth(await api("/health"));
-      setProfiles(await api("/profiles"));
+      setHealth(nextHealth);
+      setProfiles(nextProfiles);
+      setLoads((n) => n + 1);
     } catch (e) {
       setError(String(e));
     }
   }, []);
+  // Event and timer refreshes never overlap: while one is in flight, further
+  // triggers collapse into a single follow-up. User actions call load directly.
+  const refreshInBackground = useCallback(async () => {
+    if (backgroundLoading.current) {
+      backgroundPending.current = true;
+      return;
+    }
+    backgroundLoading.current = true;
+    try {
+      do {
+        backgroundPending.current = false;
+        await load();
+      } while (backgroundPending.current);
+    } finally {
+      backgroundLoading.current = false;
+    }
+  }, [load]);
   const loadModels = useCallback(async () => {
     try {
       const d = await api("/models");
@@ -240,21 +273,21 @@ function App() {
     es.onmessage = () => {
       if (!pending)
         pending = setTimeout(() => {
-          load();
+          refreshInBackground();
           setRefresh((x) => x + 1);
           pending = undefined;
         }, 500);
     };
     const timer = setInterval(() => {
       loadModels();
-      load();
+      refreshInBackground();
     }, 15000);
     return () => {
       es.close();
       clearInterval(timer);
       clearTimeout(pending);
     };
-  }, [load, loadModels]);
+  }, [load, loadModels, refreshInBackground]);
   const navigate = (v: string) => {
     setView(v);
     setError("");
@@ -364,7 +397,29 @@ function App() {
     }
   };
   const history = runs.filter((r) => terminal.has(r.status));
-  const current = runs.find((r) => r.id === detail);
+  // History rows omit task evidence; the detail view loads the full run. It
+  // reloads when the row changes, and with every refresh while the run is active.
+  const listed = runs.find((r) => r.id === detail);
+  const detailStamp = listed
+    ? JSON.stringify([
+        listed.updated_at,
+        listed.status,
+        listed.summary,
+        terminal.has(listed.status) ? 0 : loads,
+      ])
+    : "";
+  useEffect(() => {
+    if (view !== "detail" || !detailStamp) return;
+    const request = ++detailRequest.current;
+    api(`/runs/${encodeURIComponent(detail)}`)
+      .then((r) => {
+        if (request === detailRequest.current) setDetailRun(r);
+      })
+      .catch((e) => {
+        if (request === detailRequest.current) setError(String(e));
+      });
+  }, [view, detail, detailStamp]);
+  const current = listed && detailRun?.id === detail ? detailRun : null;
   return (
     <div id="app">
       <header className="bs-header">
@@ -854,7 +909,28 @@ function App() {
             refresh={refresh}
           />
         )}
-        {view === "detail" && !current && (
+        {view === "detail" && listed && !current && (
+          <>
+            <button
+              className="bs-quiet bs-back"
+              onClick={() => navigate("runs")}
+            >
+              <ArrowLeft size={16} />
+              Back to runs
+            </button>
+            <div className="bs-heading">
+              <div className="bs-inline">
+                <h1>{runName(listed)}</h1>
+                <RunStatus run={listed} />
+              </div>
+            </div>
+            <div className="bs-empty" role="status">
+              <LoaderCircle size={16} className="bs-spin" /> Loading run
+              details…
+            </div>
+          </>
+        )}
+        {view === "detail" && !listed && (
           <div className="bs-empty">
             <p>This run is no longer available.</p>
             <Button onClick={() => navigate("runs")}>Back to runs</Button>

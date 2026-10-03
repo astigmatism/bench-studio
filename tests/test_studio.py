@@ -1,4 +1,4 @@
-import copy, json, importlib.util
+import asyncio, copy, json, importlib.util
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
@@ -965,3 +965,36 @@ def test_delete_symlink_artifacts_never_follows_target(client, tmp_path):
     )
     assert c.post("/api/runs/delete", json={"ids": [run["id"]]}).status_code == 200
     assert (outside / "evidence.txt").read_text() == "unrelated"
+
+
+def test_event_stream_starts_new_clients_at_end_and_replays_reconnects(
+    tmp_path, monkeypatch
+):
+    from studio import api
+
+    monkeypatch.setattr(config, "DATA", tmp_path)
+    db.initialize()
+    with db.transaction() as c:
+        for n in range(3):
+            db.event(c, None, {"type": "run", "n": n})
+
+    class Connected:
+        def __init__(self, headers):
+            self.headers = headers
+
+        async def is_disconnected(self):
+            return False
+
+    async def first(headers, count):
+        response = await api.events(Connected(headers))
+        stream = response.body_iterator
+        try:
+            return [await anext(stream) for _ in range(count)]
+        finally:
+            await stream.aclose()
+
+    # New clients load current state themselves; old events are not replayed.
+    (marker,) = asyncio.run(first({}, 1))
+    assert marker.startswith("id: 3\n") and '"connected"' in marker
+    replay = asyncio.run(first({"last-event-id": "1"}, 2))
+    assert [chunk.split("\n")[0] for chunk in replay] == ["id: 2", "id: 3"]

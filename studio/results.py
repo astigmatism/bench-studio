@@ -1,9 +1,23 @@
+import hashlib
+import json
+import os
 import statistics
+import threading
+import zlib
 from betterbench.report import combined_score, single_rows, prefill_rows
 from common import model_fingerprint, read_json
 from . import config, db
 from .repository import collect_trials
 from . import performance
+
+# Raw per-update and per-token latency series. performance.attach() reduces them
+# to metrics; the series remain in run artifacts and exports, not in API JSON.
+RAW_SERIES = ("update_gaps_ms", "itl_ms")
+# Run-document fields that only the run detail view uses.
+DETAIL_FIELDS = ("host", "generation", "session_progress", "repository_tasks")
+# Run ID -> summaries derived from one run document and artifact state.
+_summary_cache = {}
+_summary_lock = threading.Lock()
 
 
 def baseline_slot(m, target):
@@ -185,23 +199,119 @@ def summarize(m):
     return result
 
 
-def history_snapshot(extra=()):
+def artifact_state(rid):
+    """Metadata for every file in a run directory.
+
+    Artifacts are written by atomic rename, so adding, removing, or rewriting
+    any summary input changes this value.
+    """
+    files = []
+    pending = [str(config.DATA / "runs" / rid)]
+    while pending:
+        try:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry.path)
+                            continue
+                        st = entry.stat()
+                        files.append(
+                            (entry.path, st.st_ino, st.st_mtime_ns, st.st_size)
+                        )
+                    except OSError:
+                        files.append((entry.path, None, None, None))
+        except OSError:
+            continue
+    return sorted(files)
+
+
+def summary_signature(m):
+    value = [str(config.DATA), m, artifact_state(m["id"])]
+    return hashlib.sha256(
+        json.dumps(value, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
+def strip_raw_series(value):
+    """Remove raw latency series anywhere in task evidence (requests, compactions)."""
+    if isinstance(value, dict):
+        for key in RAW_SERIES:
+            value.pop(key, None)
+        children = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return
+    for child in children:
+        strip_raw_series(child)
+
+
+def summary_entry(m):
+    """Summaries are recomputed only when the run or its artifacts change."""
+    signature = summary_signature(m)
+    entry = _summary_cache.get(m["id"])
+    if entry is not None and entry["signature"] == signature:
+        return entry
+    with _summary_lock:
+        entry = _summary_cache.get(m["id"])
+        if entry is not None and entry["signature"] == signature:
+            return entry
+        summaries = summarize(m)
+        facts, tasks = {}, {}
+        for target, item in summaries.items():
+            strip_raw_series(item.get("tasks"))
+            facts[target] = performance.ranking_facts(item)
+            tasks[target] = item.pop("tasks", [])
+        # Store JSON so every request gets independent copies to rank and
+        # annotate. Task rows are compressed and decoded only for detail views.
+        entry = {
+            "signature": signature,
+            "summaries": json.dumps(summaries, default=str),
+            "tasks": zlib.compress(json.dumps(tasks, default=str).encode(), 1),
+            "facts": facts,
+        }
+        _summary_cache[m["id"]] = entry
+        return entry
+
+
+def cached_summaries(m, *, tasks=False):
+    """Return (summaries, ranking facts); omit task rows unless requested."""
+    entry = summary_entry(m)
+    summaries = json.loads(entry["summaries"])
+    if tasks:
+        for target, rows in json.loads(zlib.decompress(entry["tasks"])).items():
+            summaries[target]["tasks"] = rows
+    return summaries, entry["facts"]
+
+
+def history_snapshot(extra=(), tasks=()):
     runs = {m["id"]: m for m in db.runs()}
     runs.update({m["id"]: m for m in extra})
-    summaries = {rid: summarize(m) for rid, m in runs.items()}
-    performance.rank_history(list(runs.values()), summaries)
+    summaries, facts = {}, {}
+    for rid, m in runs.items():
+        summaries[rid], facts[rid] = cached_summaries(m, tasks=rid in tasks)
+    with _summary_lock:
+        for rid in set(_summary_cache) - set(runs):
+            del _summary_cache[rid]
+    performance.rank_history(list(runs.values()), summaries, facts)
     with db.connect() as c:
         baselines = {r["slot"]: dict(r) for r in c.execute("SELECT * FROM baselines")}
     return runs, summaries, baselines
 
 
 def history():
+    """History rows: scores and rankings without per-task or artifact detail."""
     snapshot = history_snapshot()
-    return [enrich(m, snapshot) for m in snapshot[0].values()]
+    return [enrich(m, snapshot, detail=False) for m in snapshot[0].values()]
 
 
-def enrich(m, snapshot=None):
-    runs, summaries, baselines = snapshot if snapshot is not None else history_snapshot([m])
+def enrich(m, snapshot=None, *, detail=True):
+    runs, summaries, baselines = (
+        snapshot
+        if snapshot is not None
+        else history_snapshot([m], tasks={m["id"]} if detail else ())
+    )
     m = dict(m)
     m["model_fingerprints"] = {}
     for target, resolved in m.get("resolved", {}).items():
@@ -212,18 +322,19 @@ def enrich(m, snapshot=None):
             # Their reruns require the operator to select a model explicitly.
             pass
     m["summary"] = summaries[m["id"]]
-    root = config.DATA / "runs" / m["id"]
-    m["artifacts"] = (
-        [
-            str(p.relative_to(root))
-            for p in root.rglob("*")
-            if p.is_file()
-            and not p.is_symlink()
-            and p.stat().st_size < 100 * 1024 * 1024
-        ][:2000]
-        if root.exists()
-        else []
-    )
+    if detail:
+        root = config.DATA / "runs" / m["id"]
+        m["artifacts"] = (
+            [
+                str(p.relative_to(root))
+                for p in root.rglob("*")
+                if p.is_file()
+                and not p.is_symlink()
+                and p.stat().st_size < 100 * 1024 * 1024
+            ][:2000]
+            if root.exists()
+            else []
+        )
     for t, s in m["summary"].items():
         slot = baseline_slot(m, t)
         r = baselines.get(slot)
@@ -252,6 +363,10 @@ def enrich(m, snapshot=None):
                         )
                     )
                     s["delta_unit"] = "pp" if s["unit"] == "%" else "%"
+    if not detail:
+        for key in DETAIL_FIELDS:
+            m.pop(key, None)
+        return m
     if m.get("family") in {"session", "vision"}:
         from .session_reviews import reviews
 
@@ -293,7 +408,7 @@ def comparable(a, b):
 def compare(a, b, ta, tb):
     if a["status"] != "completed" or b["status"] != "completed":
         raise ValueError("Only completed runs can be compared")
-    _, summaries, _ = history_snapshot([a, b])
+    _, summaries, _ = history_snapshot([a, b], tasks={a["id"], b["id"]})
     sa, sb = summaries[a["id"]].get(ta), summaries[b["id"]].get(tb)
     if (
         not sa

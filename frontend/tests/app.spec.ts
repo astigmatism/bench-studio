@@ -1,8 +1,38 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 const profiles = JSON.parse(
   readFileSync(new URL("./profiles.json", import.meta.url), "utf8"),
 );
+// Like the API: history rows omit task rows and detail-only fields, which
+// GET /api/runs/{id} returns.
+const detailOnly = [
+  "artifacts",
+  "reviews",
+  "host",
+  "generation",
+  "session_progress",
+  "repository_tasks",
+];
+function historyRow(run: any) {
+  const row = structuredClone(run);
+  for (const key of detailOnly) delete row[key];
+  for (const s of Object.values(row.summary || {}) as any[]) delete s.tasks;
+  return row;
+}
+async function serveRuns(page: Page, runs: any[]) {
+  await page.route("**/api/runs", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({ json: runs.map(historyRow) })
+      : route.fallback(),
+  );
+  await page.route("**/api/runs/*", (route) => {
+    const id = new URL(route.request().url()).pathname.split("/")[3];
+    const run = runs.find((r) => r.id === decodeURIComponent(id));
+    return route.request().method() === "GET" && run
+      ? route.fulfill({ json: run })
+      : route.fallback();
+  });
+}
 const resolved = { canonical: "Qwen coding model", context: 131072 };
 const advertised = [
   {
@@ -96,14 +126,18 @@ test.beforeEach(async ({ page }) => {
         note: p.note,
       };
       runs = [body, ...runs];
-    } else if (path === "/api/runs") body = runs;
+    } else if (path === "/api/runs") body = runs.map(historyRow);
     else if (path.endsWith("/logs"))
       body = { text: "Connected to model\nMeasured request 1 / 5", size: 45 };
     else if (path.endsWith("/cancel")) {
       runs[0].status = "cancelled";
       body = runs[0];
     } else if (path.endsWith("/baseline")) body = { ok: true };
-    else if (path === "/api/compare")
+    else if (path.startsWith("/api/runs/") && route.request().method() === "GET") {
+      body = runs.find((r) => r.id === decodeURIComponent(path.split("/")[3]));
+      if (!body)
+        return route.fulfill({ status: 404, json: { detail: "Run not found" } });
+    } else if (path === "/api/compare")
       body = {
         a: completed.summary.daytime,
         b: completed.summary.daytime,
@@ -252,9 +286,7 @@ test("historical multi-model results remain readable and rerun asks for one", as
   };
   historical.summary.nighttime = structuredClone(historical.summary.daytime);
   historical.summary.nighttime.score = 38;
-  await page.route("**/api/runs", (route) =>
-    route.fulfill({ json: [historical] }),
-  );
+  await serveRuns(page, [historical]);
   await page.reload();
   await page
     .getByRole("button", { name: "Coding throughput", exact: true })
@@ -394,7 +426,7 @@ test("failed repository runs retain partial task evidence without a headline sco
       },
     },
   };
-  await page.route("**/api/runs", (route) => route.fulfill({ json: [run] }));
+  await serveRuns(page, [run]);
   await page.reload();
   await page
     .getByRole("button", { name: "Repository tasks", exact: true })
@@ -439,7 +471,7 @@ test("coding details distinguish exhausted output and repetitive reasoning", asy
       },
     },
   };
-  await page.route("**/api/runs", (route) => route.fulfill({ json: [run] }));
+  await serveRuns(page, [run]);
   await page.reload();
   await page
     .getByRole("button", { name: "Function checks", exact: true })
@@ -751,12 +783,37 @@ test("run history shows the recorded reasoning effort in the model column", asyn
   ).toBeVisible();
   const medium = structuredClone(completed);
   medium.profile_spec.parameters.reasoning_effort = "medium";
-  await page.route("**/api/runs", (route) => route.fulfill({ json: [medium] }));
+  await serveRuns(page, [medium]);
   await page.reload();
   await expect(page.getByText("Reasoning: Medium", { exact: true })).toBeVisible();
   const legacy = structuredClone(medium);
   delete legacy.profile_spec.parameters;
-  await page.route("**/api/runs", (route) => route.fulfill({ json: [legacy] }));
+  await serveRuns(page, [legacy]);
   await page.reload();
   await expect(page.getByText("Reasoning:")).toHaveCount(0);
+});
+test("run details load on demand from the run endpoint", async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let detailReads = 0;
+  await page.route("**/api/runs/completed-001", async (route) => {
+    detailReads++;
+    await held;
+    await route.fulfill({ json: completed });
+  });
+  await page.reload();
+  const row = page.getByRole("button", { name: "Coding throughput", exact: true });
+  await expect(row).toBeVisible();
+  expect(detailReads).toBe(0);
+  await row.click();
+  await expect(page.getByText("Loading run details…")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Coding throughput", exact: true }),
+  ).toBeVisible();
+  release();
+  await expect(page.getByRole("cell", { name: "code/1" })).toBeVisible();
+  await expect(page.getByText("Loading run details…")).toHaveCount(0);
+  expect(detailReads).toBe(1);
 });

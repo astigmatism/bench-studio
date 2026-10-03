@@ -272,18 +272,17 @@ def test_successful_timing_requires_identical_tasks_and_review_feedback():
     assert metric(ss["0"]["day"])["overall_rank"]["total"] == 3
 
 
-def test_history_scans_each_run_once_and_recomputes_after_deletion(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(config, "DATA", tmp_path)
-    db.initialize()
-    for rid in ("1", "2"):
-        r = run(rid)
-        r["family"] = "quality"
-        r["profile_spec"]["execution_adapter_version"] = 2
-        with db.transaction() as c:
-            db.put_run(c, r)
-        atomic_json(tmp_path / "runs" / rid / "day" / "result.json", summary())
+def stored_run(tmp_path, rid, requests=None):
+    r = run(rid)
+    r["family"] = "quality"
+    r["profile_spec"]["execution_adapter_version"] = 2
+    with db.transaction() as c:
+        db.put_run(c, r)
+    atomic_json(tmp_path / "runs" / rid / "day" / "result.json", summary(requests))
+    return r
+
+
+def spy_on_summarize(monkeypatch):
     original = results.summarize
     calls = []
 
@@ -292,15 +291,89 @@ def test_history_scans_each_run_once_and_recomputes_after_deletion(
         return original(r)
 
     monkeypatch.setattr(results, "summarize", spy)
+    return calls
+
+
+def test_history_scans_each_run_once_and_recomputes_after_deletion(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "DATA", tmp_path)
+    db.initialize()
+    for rid in ("1", "2"):
+        stored_run(tmp_path, rid)
+    calls = spy_on_summarize(monkeypatch)
     history = results.history()
     assert sorted(calls) == ["1", "2"]
     assert metric(history[0]["summary"]["day"])["model_rank"]["total"] == 2
+    assert metric(history[0]["summary"]["day"])["previous"]["run_id"] == "1"
     with db.transaction() as c:
         c.execute("DELETE FROM runs WHERE id='1'")
     calls.clear()
     result = results.enrich(db.get_run("2"))
-    assert calls == ["2"]
+    # The unchanged run reuses its summary; rankings still reflect the deletion.
+    assert calls == []
+    assert metric(result["summary"]["day"])["model_rank"]["total"] == 1
     assert metric(result["summary"]["day"])["previous"] is None
+
+
+def test_history_rows_omit_task_detail_and_api_omits_raw_series(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "DATA", tmp_path)
+    db.initialize()
+    r = stored_run(tmp_path, "1", [request(update_gaps_ms=[20, 40])])
+    r.update(host={"worker_image": "sha256:worker"}, session_progress={"phase": "x"})
+    db.update_run(r)
+    (row,) = results.history()
+    assert "tasks" not in row["summary"]["day"]
+    assert not {"artifacts", "reviews", "host", "session_progress"} & set(row)
+    assert metric(row["summary"]["day"], "update_gap_ms")["samples"] == 2
+    detail = results.enrich(db.get_run("1"))
+    (measured,) = detail["summary"]["day"]["tasks"][0]["requests"]
+    assert "update_gaps_ms" not in measured
+    assert measured["performance_values"]["output_tps"] == 50
+    assert metric(detail["summary"]["day"], "update_gap_ms")["samples"] == 2
+    assert detail["host"] == {"worker_image": "sha256:worker"}
+    assert detail["artifacts"] == ["day/result.json"]
+    # Stored evidence keeps the raw series.
+    stored = json.loads((tmp_path / "runs" / "1" / "day" / "result.json").read_text())
+    assert stored["tasks"][0]["requests"][0]["update_gaps_ms"] == [20, 40]
+
+
+def test_cached_summaries_follow_artifact_run_and_baseline_changes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "DATA", tmp_path)
+    db.initialize()
+    r = stored_run(tmp_path, "1")
+    calls = spy_on_summarize(monkeypatch)
+    first = results.history()[0]
+    assert results.history()[0]["summary"]["day"]["score"] == 100
+    assert calls == ["1"]
+    # Every response is an independent copy of the cached summary.
+    first["summary"]["day"]["score"] = -1
+    metric(first["summary"]["day"])["value"] = -1
+    again = results.history()[0]["summary"]["day"]
+    assert again["score"] == 100 and metric(again)["value"] == 50
+    atomic_json(
+        tmp_path / "runs" / "1" / "day" / "result.json", dict(summary(), score=50)
+    )
+    assert results.history()[0]["summary"]["day"]["score"] == 50
+    r["status"] = "failed"
+    db.update_run(r)
+    assert results.history()[0]["summary"]["day"]["score"] is None
+    assert calls == ["1", "1", "1"]
+    r["status"] = "completed"
+    db.update_run(r)
+    with db.transaction() as c:
+        c.execute(
+            "INSERT INTO baselines VALUES(?,?,?)",
+            (results.baseline_slot(r, "day"), "1", "day"),
+        )
+    assert results.history()[0]["summary"]["day"]["baseline"]["run_id"] == "1"
+    with db.transaction() as c:
+        c.execute("DELETE FROM baselines")
+    assert "baseline" not in results.history()[0]["summary"]["day"]
 
 
 def test_speed_legacy_score_is_unchanged_and_client_speed_uses_request_end(

@@ -977,6 +977,15 @@ body {
   padding: 64px 20px;
   color: var(--bs-muted);
 }
+#app .bs-spin {
+  vertical-align: -3px;
+  animation: bs-spin 1s linear infinite;
+}
+@keyframes bs-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 #app .bs-log {
   max-height: 520px;
   overflow: auto;
@@ -1058,6 +1067,9 @@ body {
 @media (prefers-reduced-motion: reduce) {
   #app * {
     transition: none !important;
+  }
+  #app .bs-spin {
+    animation: none;
   }
 }
 

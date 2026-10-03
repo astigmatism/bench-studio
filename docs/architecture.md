@@ -1,6 +1,6 @@
 # Architecture and measurement contracts
 
-The FastAPI application owns HTTP, React assets, immutable profile documents, history, baselines, and event delivery. SQLite uses WAL and explicit transactions (`user_version` migrations). Artifact paths are resolved beneath an individual run; exports never traverse symlinks. State lives under `data/`, shared with the controller.
+The FastAPI application owns HTTP, React assets, immutable profile documents, history, baselines, and event delivery. SQLite uses WAL and explicit transactions (`user_version` migrations). Artifact paths are resolved beneath an individual run; exports never traverse symlinks. State lives under `data/`, shared with the controller. `/api/events` notifies the browser that state changed; a new connection starts after the latest event, and a reconnect resumes from `Last-Event-ID`.
 
 The application has **no Docker socket**. The separate trusted runner uses its local Docker daemon only for Bench Studio workers and verification containers. The model router and AI Runtime may run on another LAN host. New jobs select one healthy, currently advertised model; the runner waits for router idleness, pins discovery metadata, and revalidates model identity while queued and running. Historical multi-target jobs remain readable. Runtime load detection is observational, not an exclusive host reservation.
 

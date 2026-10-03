@@ -39,6 +39,8 @@ METRICS = [
         "backend_output_v1",
     ),
 ]
+# Session timings ranked only among runs with the same successful attempts.
+SUCCESS_TIMINGS = {"active_seconds", "implementation_seconds"}
 
 
 def number(value, *, positive=False):
@@ -345,24 +347,44 @@ def rounded(m):
     )
 
 
-def rank_history(runs, summaries):
-    """One in-memory snapshot; group/sort once, with no per-peer artifact I/O."""
+def ranking_facts(summary):
+    """Task-derived ranking inputs, so cached history can rank without task rows."""
+    from .session_results import feedback_signature
+
+    passed = sorted(
+        str(t.get("id"))
+        for t in summary.get("tasks", [])
+        if t.get("status") == "passed"
+    )
+    timed = any(
+        m.get("id") in SUCCESS_TIMINGS
+        for m in summary.get("performance", {}).get("metrics", [])
+    )
+    return {
+        # Prefill sweep depths that produced measurements.
+        "depths": sorted({task_id.split(" / ")[0] for task_id in passed}),
+        # Identity of the successful attempts behind session timing metrics.
+        "success": digest([passed, feedback_signature(summary)]) if timed else None,
+    }
+
+
+def rank_history(runs, summaries, facts=None):
+    """One in-memory snapshot; group/sort once, with no per-peer artifact I/O.
+
+    ``facts`` optionally maps run ID -> target -> ``ranking_facts(summary)`` for
+    summaries whose task rows were omitted.
+    """
     groups = defaultdict(list)
     for run in runs:
         for target, summary in summaries[run["id"]].items():
             perf = summary["performance"]
             perf["cohort"] = cohort(run)
+            known = (facts or {}).get(run["id"], {}).get(target)
+            fact = known if known is not None else ranking_facts(summary)
             if summary.get("metric") == "prefill_tps":
                 # A shorter context window can skip entire sweep depths. Those
                 # partial sweeps must not outrank runs that measured all depths.
-                depths = sorted(
-                    {
-                        t["id"].split(" / ")[0]
-                        for t in summary.get("tasks", [])
-                        if t.get("status") == "passed"
-                    }
-                )
-                perf["cohort"] = digest([perf["cohort"], depths])
+                perf["cohort"] = digest([perf["cohort"], fact["depths"]])
             perf["ranking_unavailable"] = exclusion(run, summary)
             perf["conditions"] = conditions(run, target)
             model = summary["canonical"]
@@ -376,19 +398,8 @@ def rank_history(runs, summaries):
                 if perf["ranking_unavailable"] or m["value"] is None:
                     continue
                 success = None
-                if m["id"] in {"active_seconds", "implementation_seconds"}:
-                    from .session_results import feedback_signature
-
-                    success = digest(
-                        [
-                            sorted(
-                                t["id"]
-                                for t in summary.get("tasks", [])
-                                if t.get("status") == "passed"
-                            ),
-                            feedback_signature(summary),
-                        ]
-                    )
+                if m["id"] in SUCCESS_TIMINGS:
+                    success = fact["success"]
                 key = (perf["cohort"], m["id"], m["method"], success)
                 entry = (order, model, run, target, m, perf)
                 groups[key].append(entry)
