@@ -288,8 +288,10 @@ test("historical multi-model results remain readable and rerun asks for one", as
   historical.summary.nighttime.score = 38;
   await serveRuns(page, [historical]);
   await page.reload();
+  // Multi-model runs now have one row per model; the run name repeats.
   await page
     .getByRole("button", { name: "Coding throughput", exact: true })
+    .first()
     .click();
   await page.getByRole("button", { name: "Nighttime", exact: true }).click();
   await expect(page.getByText("Retired vision model")).toBeVisible();
@@ -775,22 +777,27 @@ test("a history refresh started before deletion cannot restore deleted rows", as
     page.getByLabel("Select all runs", { exact: true }),
   ).toBeDisabled();
 });
-test("run history shows the recorded reasoning effort in the model column", async ({
+test("run history shows the recorded reasoning effort in its own column", async ({
   page,
 }) => {
   await expect(
-    page.getByText("Reasoning: Runtime default", { exact: true }),
+    page.getByRole("cell", { name: "Runtime default", exact: true }),
   ).toBeVisible();
   const medium = structuredClone(completed);
   medium.profile_spec.parameters.reasoning_effort = "medium";
   await serveRuns(page, [medium]);
   await page.reload();
-  await expect(page.getByText("Reasoning: Medium", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "Medium", exact: true }),
+  ).toBeVisible();
   const legacy = structuredClone(medium);
   delete legacy.profile_spec.parameters;
   await serveRuns(page, [legacy]);
   await page.reload();
-  await expect(page.getByText("Reasoning:")).toHaveCount(0);
+  await expect(page.getByRole("cell", { name: /Medium/ })).toHaveCount(0);
+  await expect(
+    page.getByRole("cell", { name: "Runtime default", exact: true }),
+  ).toHaveCount(0);
 });
 test("run details load on demand from the run endpoint", async ({ page }) => {
   let release!: () => void;

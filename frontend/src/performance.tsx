@@ -11,7 +11,7 @@ const labels = [
   "Prompt processing",
   "Request latency",
 ];
-const descriptions: Record<string, string> = {
+export const descriptions: Record<string, string> = {
   output_tps:
     "Median client-observed output tokens/s, including thinking. (Output tokens − 1) ÷ (request time − first-token time).",
   ttft_seconds:
@@ -31,7 +31,13 @@ export function findMetric(summary: Obj, id: string): Obj {
       id,
       label: labels[primaryMetrics.indexOf(id)] || id,
       value: null,
-      direction: ["output_tps", "prompt_tps"].includes(id) ? "higher" : "lower",
+      direction: [
+        "output_tps",
+        "prompt_tps",
+        "prompt_estimate_tps",
+      ].includes(id)
+        ? "higher"
+        : "lower",
       unavailable: "Not recorded",
       samples: 0,
       total: 0,
@@ -135,6 +141,36 @@ export function PerformanceCell({
           <Change metric={m} />
         </>
       )}
+    </div>
+  );
+}
+// Input (prefill) speed in tokens/s: the measured prefill sweep score for
+// prefill-profile runs, otherwise the client-side prompt-throughput estimate.
+export function inputSpeedMetric(summary: Obj): Obj {
+  if (
+    summary?.metric === "prefill_tps" &&
+    typeof summary?.score === "number"
+  )
+    return {
+      id: "prefill_tps",
+      label: "Input speed",
+      value: summary.score,
+      unit: summary.unit || "prompt tok/s",
+      direction: "higher",
+      precision: 1,
+    };
+  return findMetric(summary, "prompt_estimate_tps");
+}
+export function InputSpeedCell({ summary }: { summary: Obj }) {
+  const m = inputSpeedMetric(summary);
+  return (
+    <div
+      className="bs-performance-cell"
+      title={descriptions.prompt_estimate_tps}
+    >
+      <div className={m.value == null ? "bs-small" : "bs-value"}>
+        {metricValue(m)}
+      </div>
     </div>
   );
 }

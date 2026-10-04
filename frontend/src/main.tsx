@@ -39,6 +39,9 @@ import {
   PerformanceDetails,
   PerformanceCell,
   PerformanceComparison,
+  findMetric,
+  inputSpeedMetric,
+  InputSpeedCell,
 } from "./performance";
 import {
   isSession,
@@ -82,6 +85,88 @@ const reasoningEffort = (run: Obj) => {
   if (!e) return "";
   return e === "default" ? "Runtime default" : label(e);
 };
+// One flat row per finished run × model pair, so history tables can sort on
+// any column without row spans.
+type HistRow = { run: Obj; target: string; s: Obj };
+type HistoryCategory = {
+  name: string;
+  runs: string[];
+  rows: HistRow[];
+  latest: string;
+};
+const HISTORY_COLUMNS: [string, string, boolean][] = [
+  // key, label, numeric
+  ["run", "Run", false],
+  ["model", "Model", false],
+  ["reasoning", "Reasoning", false],
+  ["output", "Output speed", true],
+  ["input", "Input speed", true],
+  ["result", "Result", true],
+  ["delta", "vs baseline", true],
+  ["status", "Status", false],
+];
+const historyRows = (history: Obj[]): HistRow[] =>
+  history.flatMap((r) =>
+    (r.requested_targets || []).map((t: string) => ({
+      run: r,
+      target: t,
+      s: r.summary?.[t] || {},
+    })),
+  );
+const historyCategories = (history: Obj[]): (HistoryCategory & {
+  id: string;
+})[] =>
+  Object.entries(
+    historyRows(history).reduce((acc, row) => {
+      const id = row.run.profile || "custom";
+      const cat =
+        acc[id] ||
+        (acc[id] = { name: runName(row.run), runs: [], rows: [], latest: "" });
+      if (!cat.runs.includes(row.run.id)) cat.runs.push(row.run.id);
+      cat.rows.push(row);
+      const created = row.run.created_at || "";
+      if (created > cat.latest) cat.latest = created;
+      return acc;
+    }, {} as Record<string, HistoryCategory>),
+  ).map(([id, c]) => ({ id, ...c })).sort((a, b) =>
+    b.latest.localeCompare(a.latest),
+  );
+const historyKey = (row: HistRow, key: string): number | string | null => {
+  const { run, s } = row;
+  switch (key) {
+    case "run":
+      return run.created_at || "";
+    case "model":
+      return String(run.resolved?.[row.target]?.canonical || row.target).toLowerCase();
+    case "reasoning":
+      return reasoningEffort(run) || "";
+    case "output":
+      return findMetric(s, "output_tps").value;
+    case "input":
+      return inputSpeedMetric(s).value;
+    case "result":
+      return typeof s.score === "number" ? s.score : null;
+    case "delta":
+      return typeof s.delta === "number" ? s.delta : null;
+    case "status":
+      return run.status || "";
+    default:
+      return null;
+  }
+};
+const sortRows = (rows: HistRow[], sort: { key: string; dir: 1 | -1 }) =>
+  [...rows].sort((a, b) => {
+    const av = historyKey(a, sort.key);
+    const bv = historyKey(b, sort.key);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1; // missing values always sort last
+    if (bv == null) return -1;
+    return (
+      (typeof av === "number" && typeof bv === "number"
+        ? av - bv
+        : String(av).localeCompare(String(bv))) * sort.dir
+    );
+  });
 const elapsed = (r: Obj) => {
   if (!r.started_at) return "Not started";
   const v = Math.max(
@@ -202,7 +287,10 @@ function App() {
     [setupSmoke, setSetupSmoke] = useState(false),
     [refresh, setRefresh] = useState(0),
     [loads, setLoads] = useState(0),
-    [detailRun, setDetailRun] = useState<Obj | null>(null);
+    [detailRun, setDetailRun] = useState<Obj | null>(null),
+    [sorts, setSorts] = useState<Record<string, { key: string; dir: 1 | -1 }>>(
+      {},
+    );
   const setupSubmission = useRef<string | null>(null);
   const historyVersion = useRef(0);
   const loadSequence = useRef(0);
@@ -397,6 +485,20 @@ function App() {
     }
   };
   const history = runs.filter((r) => terminal.has(r.status));
+  const categories = historyCategories(history);
+  const sortFor = (id: string) => sorts[id] || { key: "run", dir: -1 };
+  const toggleSort = (id: string, key: string) =>
+    setSorts((prev) => {
+      const current = prev[id] || { key: "run", dir: -1 };
+      const numeric = HISTORY_COLUMNS.find(([k]) => k === key)?.[2] ?? false;
+      const dir: 1 | -1 =
+        current.key === key
+          ? (current.dir * -1) as 1 | -1
+          : numeric
+            ? -1
+            : 1;
+      return { ...prev, [id]: { key, dir } };
+    });
   // History rows omit task evidence; the detail view loads the full run. It
   // reloads when the row changes, and with every refresh while the run is active.
   const listed = runs.find((r) => r.id === detail);
@@ -536,6 +638,25 @@ function App() {
             <div className="bs-section-head">
               <h2>Run history</h2>
               <div className="bs-inline bs-history-actions">
+                <input
+                  type="checkbox"
+                  aria-label="Select all runs"
+                  checked={
+                    !!history.length && selected.length === history.length
+                  }
+                  ref={(node) => {
+                    if (node)
+                      node.indeterminate =
+                        selected.length > 0 &&
+                        selected.length < history.length;
+                  }}
+                  disabled={!history.length || deleteBusy}
+                  onChange={(e) =>
+                    setSelected(
+                      e.target.checked ? history.map((r) => r.id) : [],
+                    )
+                  }
+                />
                 <span className="bs-small" role="status">
                   {selected.length} selected
                 </span>
@@ -559,152 +680,193 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className="bs-table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th className="bs-checkcell">
-                      <input
-                        type="checkbox"
-                        aria-label="Select all runs"
-                        checked={
-                          !!history.length && selected.length === history.length
-                        }
-                        ref={(node) => {
-                          if (node)
-                            node.indeterminate =
-                              selected.length > 0 &&
-                              selected.length < history.length;
-                        }}
-                        disabled={!history.length || deleteBusy}
-                        onChange={(e) =>
-                          setSelected(
-                            e.target.checked ? history.map((r) => r.id) : [],
-                          )
-                        }
-                      />
-                    </th>
-                    <th>Benchmark</th>
-                    <th>Model</th>
-                    <th>Output speed</th>
-                    <th>First token</th>
-                    <th>Prompt processing</th>
-                    <th>Result</th>
-                    <th>vs baseline</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.flatMap((r) =>
-                    r.requested_targets.map((t: string, index: number) => {
-                      const s = r.summary?.[t] || {};
-                      const count = r.requested_targets.length;
-                      const effort = reasoningEffort(r);
-                      return (
-                        <tr key={`${r.id}:${t}`}>
-                          {index === 0 && (
-                            <>
-                              <td className="bs-checkcell" rowSpan={count}>
-                                <input
-                                  type="checkbox"
-                                  aria-label={`Select ${r.id}`}
-                                  checked={selected.includes(r.id)}
-                                  disabled={deleteBusy}
-                                  onChange={(e) =>
-                                    setSelected(
-                                      e.target.checked
-                                        ? [...selected, r.id]
-                                        : selected.filter((x) => x !== r.id),
-                                    )
-                                  }
-                                />
-                              </td>
-                              <td rowSpan={count}>
-                                <button
-                                  className="bs-quiet"
-                                  onClick={() => openRun(r.id)}
-                                >
-                                  {runName(r)}
-                                </button>
-                                <div className="bs-small">
-                                  {date(r.created_at)}
-                                </div>
-                                {r.note && (
-                                  <div className="bs-small">{r.note}</div>
-                                )}
-                              </td>
-                            </>
-                          )}
-                          <td>
-                            {label(t)}
-                            <div className="bs-small">
-                              {r.resolved?.[t]?.canonical || t}
-                            </div>
-                            {effort && (
-                              <div className="bs-small">
-                                Reasoning: {effort}
-                              </div>
-                            )}
-                          </td>
-                          <td>
-                            <PerformanceCell
-                              summary={s}
-                              id="output_tps"
-                              ranks
-                            />
-                          </td>
-                          <td>
-                            <PerformanceCell summary={s} id="ttft_seconds" />
-                          </td>
-                          <td>
-                            <PerformanceCell summary={s} id="prompt_tps" />
-                          </td>
-                          <td>
-                            <div className="bs-value">
-                              {fmt(s.score)} <small>{s.unit}</small>
-                            </div>
-                            <div className="bs-small">
-                              {s.passed !== undefined
-                                ? `${s.passed} / ${s.count} passed`
-                                : s.count
-                                  ? `${s.count} samples`
-                                  : ""}
-                            </div>
-                            {s.metric === "decode_tps" && (
-                              <div className="bs-small">
-                                Weighted throughput
-                              </div>
-                            )}
-                          </td>
-                          <td
-                            className={s.delta > 0 ? "bs-positive" : "bs-small"}
-                          >
-                            {s.delta != null
-                              ? `${s.delta >= 0 ? "+" : ""}${fmt(s.delta)} ${s.delta_unit}`
-                              : s.baseline?.run_id === r.id
-                                ? "Baseline"
-                                : "—"}
-                          </td>
-                          {index === 0 && (
-                            <td rowSpan={count}>
-                              <RunStatus run={r} />
-                              {r.load_warning && (
-                                <div className="bs-small">Shared activity</div>
-                              )}
-                            </td>
-                          )}
-                        </tr>
-                      );
-                    }),
-                  )}
-                </tbody>
-              </table>
-              {!history.length && (
+            {!history.length ? (
+              <div className="bs-table-wrap">
                 <div className="bs-empty">
                   No finished runs yet. Your results will appear here.
                 </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              categories.map((cat) => {
+                const sort = sortFor(cat.id);
+                const rows = sortRows(cat.rows, sort);
+                return (
+                  <section
+                    key={cat.id}
+                    className="bs-history-category"
+                    aria-label={cat.name}
+                  >
+                    <div className="bs-section-head">
+                      <h3>{cat.name}</h3>
+                      <span className="bs-small">
+                        {cat.runs.length}{" "}
+                        {cat.runs.length === 1 ? "run" : "runs"}
+                      </span>
+                    </div>
+                    <div className="bs-table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th className="bs-checkcell">
+                              <input
+                                type="checkbox"
+                                aria-label={`Select all ${cat.name} runs`}
+                                checked={cat.runs.every((rid) =>
+                                  selected.includes(rid),
+                                )}
+                                ref={(node) => {
+                                  if (node)
+                                    node.indeterminate =
+                                      cat.runs.some((rid) =>
+                                        selected.includes(rid),
+                                      ) &&
+                                      !cat.runs.every((rid) =>
+                                        selected.includes(rid),
+                                      );
+                                }}
+                                disabled={deleteBusy}
+                                onChange={(e) =>
+                                  setSelected(
+                                    e.target.checked
+                                      ? [...new Set([...selected, ...cat.runs])]
+                                      : selected.filter(
+                                          (rid) => !cat.runs.includes(rid),
+                                        ),
+                                  )
+                                }
+                              />
+                            </th>
+                            {HISTORY_COLUMNS.map(([key, columnLabel]) => (
+                              <th
+                                key={key}
+                                aria-sort={
+                                  sort.key === key
+                                    ? sort.dir === 1
+                                      ? "ascending"
+                                      : "descending"
+                                    : undefined
+                                }
+                              >
+                                <button
+                                  type="button"
+                                  className="bs-sortable"
+                                  onClick={() => toggleSort(cat.id, key)}
+                                >
+                                  {columnLabel}
+                                  {sort.key === key && (
+                                    <span
+                                      className="bs-sort-arrow"
+                                      aria-hidden="true"
+                                    >
+                                      {sort.dir === 1 ? "↑" : "↓"}
+                                    </span>
+                                  )}
+                                </button>
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((row) => {
+                            const s = row.s;
+                            return (
+                              <tr key={`${row.run.id}:${row.target}`}>
+                                <td className="bs-checkcell">
+                                  <input
+                                    type="checkbox"
+                                    aria-label={`Select ${row.run.id}`}
+                                    checked={selected.includes(row.run.id)}
+                                    disabled={deleteBusy}
+                                    onChange={(e) =>
+                                      setSelected(
+                                        e.target.checked
+                                          ? [...selected, row.run.id]
+                                          : selected.filter(
+                                              (x) => x !== row.run.id,
+                                            ),
+                                      )
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <button
+                                    className="bs-quiet"
+                                    onClick={() => openRun(row.run.id)}
+                                  >
+                                    {runName(row.run)}
+                                  </button>
+                                  <div className="bs-small">
+                                    {date(row.run.created_at)}
+                                  </div>
+                                  {row.run.note && (
+                                    <div className="bs-small">
+                                      {row.run.note}
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  {label(row.target)}
+                                  <div className="bs-small">
+                                    {row.run.resolved?.[row.target]
+                                      ?.canonical || row.target}
+                                  </div>
+                                </td>
+                                <td>{reasoningEffort(row.run) || "—"}</td>
+                                <td>
+                                  <PerformanceCell
+                                    summary={s}
+                                    id="output_tps"
+                                  />
+                                </td>
+                                <td>
+                                  <InputSpeedCell summary={s} />
+                                </td>
+                                <td>
+                                  <div className="bs-value">
+                                    {fmt(s.score)} <small>{s.unit}</small>
+                                  </div>
+                                  <div className="bs-small">
+                                    {s.passed !== undefined
+                                      ? `${s.passed} / ${s.count} passed`
+                                      : s.count
+                                        ? `${s.count} samples`
+                                        : ""}
+                                  </div>
+                                  {s.metric === "decode_tps" && (
+                                    <div className="bs-small">
+                                      Weighted throughput
+                                    </div>
+                                  )}
+                                </td>
+                                <td
+                                  className={
+                                    s.delta > 0 ? "bs-positive" : "bs-small"
+                                  }
+                                >
+                                  {s.delta != null
+                                    ? `${s.delta >= 0 ? "+" : ""}${fmt(s.delta)} ${s.delta_unit}`
+                                    : s.baseline?.run_id === row.run.id
+                                      ? "Baseline"
+                                      : "—"}
+                                </td>
+                                <td>
+                                  <RunStatus run={row.run} />
+                                  {row.run.load_warning && (
+                                    <div className="bs-small">
+                                      Shared activity
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                );
+              })
+            )}
             <div className="bs-note">
               <Bookmark size={15} />
               Baselines are saved per profile and target. Each model retains its

@@ -63,7 +63,9 @@ async function setup(page: any, value = run) {
     const path = new URL(route.request().url()).pathname;
     const data =
       path === "/api/runs"
-        ? [value]
+        ? Array.isArray(value)
+          ? value
+          : [value]
         : path.startsWith("/api/runs/")
           ? value
           : path === "/api/profiles"
@@ -92,8 +94,11 @@ test("performance leads completed runs with coverage, ranks and direction-aware 
   await expect(
     history.getByRole("columnheader", { name: "Output speed" }),
   ).toBeVisible();
+  await expect(
+    history.getByRole("columnheader", { name: "Input speed" }),
+  ).toBeVisible();
   await expect(history.getByText("28.0 tok/s")).toBeVisible();
-  await expect(history.getByText("Model #1 of 2")).toBeVisible();
+  await expect(history.getByText("Model #1 of 2")).toHaveCount(0);
   await page
     .getByRole("button", { name: "Coding sessions", exact: true })
     .click();
@@ -123,7 +128,7 @@ test("performance leads completed runs with coverage, ranks and direction-aware 
   await expect(page.getByText("Session timing and token totals")).toBeVisible();
 });
 
-test("multi-model history keeps each model and its measurements in one row", async ({
+test("multi-model history gives each model its own row in one table", async ({
   page,
 }) => {
   const value = structuredClone(run);
@@ -136,10 +141,14 @@ test("multi-model history keeps each model and its measurements in one row", asy
   const beta = page.getByRole("row").filter({ hasText: "Model Beta" });
   await expect(alpha.getByText("28.0 tok/s")).toBeVisible();
   await expect(beta.getByText("40.0 tok/s")).toBeVisible();
+  // One row per run + model pair, so the run-level checkbox repeats per row.
   await expect(
     page.getByLabel("Select performance-run", { exact: true }),
-  ).toHaveCount(1);
-  await page.getByLabel("Select performance-run", { exact: true }).check();
+  ).toHaveCount(2);
+  await page
+    .getByLabel("Select performance-run", { exact: true })
+    .first()
+    .check();
   await expect(
     page.getByRole("button", { name: "Delete selected" }),
   ).toBeEnabled();
@@ -198,4 +207,132 @@ test("active sessions retain prominent progress and no completed scorecard", asy
   await expect(
     page.getByRole("region", { name: "Performance scorecard" }),
   ).toHaveCount(0);
+});
+
+test("input speed shows the estimate for regular runs and the prefill score for sweeps", async ({
+  page,
+}) => {
+  const value = structuredClone(run);
+  value.summary.daytime.performance.metrics.push({
+    id: "prompt_estimate_tps",
+    label: "Prompt throughput estimate",
+    value: 1234.5,
+    unit: "tok/s",
+    direction: "higher",
+    precision: 1,
+    samples: 50,
+    total: 51,
+  });
+  await setup(page, value);
+  const history = page.getByRole("table");
+  await expect(history.getByText("1,234.5 tok/s")).toBeVisible();
+  await expect(
+    history.getByRole("columnheader", { name: "First token", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    history.getByRole("columnheader", {
+      name: "Prompt processing",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  const sweep = structuredClone(value);
+  sweep.summary.daytime.metric = "prefill_tps";
+  sweep.summary.daytime.score = 555;
+  sweep.summary.daytime.unit = "prompt tok/s";
+  await setup(page, sweep);
+  await expect(
+    page.getByRole("table").getByText("555.0 prompt tok/s"),
+  ).toBeVisible();
+});
+
+test("history tables sort by any column", async ({ page }) => {
+  const fast = structuredClone(run);
+  fast.id = "sort-fast";
+  fast.created_at = "2026-09-21T11:00:00Z";
+  fast.resolved.daytime = { canonical: "Model A" };
+  fast.summary.daytime.performance.metrics[0].value = 40;
+  const slow = structuredClone(run);
+  slow.id = "sort-slow";
+  slow.created_at = "2026-09-21T12:00:00Z";
+  slow.resolved.daytime = { canonical: "Model Z" };
+  slow.summary.daytime.performance.metrics[0].value = 20;
+  await setup(page, [slow, fast]);
+  const rows = page
+    .getByRole("region", { name: "Coding sessions" })
+    .getByRole("row");
+  const indexOf = async (model: string) => {
+    const texts = await rows.allTextContents();
+    return texts.findIndex((t) => t.includes(model));
+  };
+  // Default order is newest first: slow (Model Z) is newer, so it leads.
+  await expect(
+    page.getByRole("columnheader", { name: "Run", exact: true }),
+  ).toHaveAttribute("aria-sort", "descending");
+  expect(await indexOf("Model Z")).toBeLessThan(await indexOf("Model A"));
+  // Numeric columns sort descending on first click: 40 tok/s leads.
+  const header = page.getByRole("button", { name: /Output speed/ });
+  await header.click();
+  await expect(
+    page.getByRole("columnheader", { name: /Output speed/ }),
+  ).toHaveAttribute("aria-sort", "descending");
+  expect(await indexOf("Model A")).toBeLessThan(await indexOf("Model Z"));
+  await header.click();
+  await expect(
+    page.getByRole("columnheader", { name: /Output speed/ }),
+  ).toHaveAttribute("aria-sort", "ascending");
+  expect(await indexOf("Model Z")).toBeLessThan(await indexOf("Model A"));
+  // Text columns sort ascending on first click.
+  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await expect(
+    page.getByRole("columnheader", { name: /Model/ }),
+  ).toHaveAttribute("aria-sort", "ascending");
+  expect(await indexOf("Model A")).toBeLessThan(await indexOf("Model Z"));
+});
+
+test("history keeps one table per benchmark", async ({ page }) => {
+  const first = structuredClone(run);
+  first.id = "bench-a";
+  const second = structuredClone(run);
+  second.id = "bench-b";
+  second.profile = "coding";
+  second.profile_spec = { family: "speed", name: "Coding throughput" };
+  second.resolved.daytime = { canonical: "Model Beta" };
+  await setup(page, [first, second]);
+  const sessions = page.getByRole("region", { name: "Coding sessions" });
+  const coding = page.getByRole("region", {
+    name: "Coding throughput",
+    exact: true,
+  });
+  await expect(sessions).toContainText("Model Alpha");
+  await expect(sessions).not.toContainText("Model Beta");
+  await expect(coding).toContainText("Model Beta");
+  await expect(coding).not.toContainText("Model Alpha");
+  await expect(
+    page.getByRole("columnheader", { name: "Output speed" }),
+  ).toHaveCount(2);
+});
+
+test("per-table select all selects only its category and spans tables with the global bar", async ({
+  page,
+}) => {
+  const first = structuredClone(run);
+  first.id = "cat-a";
+  const second = structuredClone(run);
+  second.id = "cat-b";
+  second.profile = "coding";
+  second.profile_spec = { family: "speed", name: "Coding throughput" };
+  await setup(page, [first, second]);
+  await page
+    .getByLabel("Select all Coding sessions runs", { exact: true })
+    .check();
+  await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
+  await page
+    .getByLabel("Select all Coding throughput runs", { exact: true })
+    .check();
+  await expect(page.getByText("2 selected", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Compare selected", exact: true }),
+  ).toBeEnabled();
+  await page.getByLabel("Select all runs", { exact: true }).uncheck();
+  await expect(page.getByText("0 selected", { exact: true })).toBeVisible();
 });

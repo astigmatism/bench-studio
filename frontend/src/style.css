@@ -367,6 +367,27 @@
   width: 26px;
   padding-right: 0;
 }
+#app .bs-history-category {
+  margin-bottom: 22px;
+}
+#app .bs-history-category > .bs-section-head {
+  margin-bottom: 10px;
+}
+#app .bs-sortable {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+#app .bs-sortable:hover {
+  color: var(--bs-ink);
+}
+#app .bs-sort-arrow {
+  font-size: 10px;
+  line-height: 1;
+}
 #app input[type="checkbox"],
 #app input[type="radio"] {
   accent-color: var(--bs-accent);
