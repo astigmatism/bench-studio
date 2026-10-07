@@ -6,7 +6,7 @@ import json
 import re
 import time
 from pathlib import Path
-from common import atomic_json, now
+from common import RouterSwitching, atomic_json, client_name, error_kind, error_message, now
 from .router_stream import completion, ContextBudgetError, EmptyResponseError
 
 ACTIVE_PHASES = {
@@ -351,18 +351,34 @@ This is an application coding task. For optional browser interaction checks, Nod
 
         stream_progress(0)
         try:
-            result = await asyncio.wait_for(
-                self.request(
-                    self.manifest["settings"]["endpoint"],
-                    payload,
-                    **(
-                        {"progress": stream_progress}
-                        if self.request is completion
-                        else {}
-                    ),
-                ),
-                timeout=self.remaining(),
-            )
+            while True:
+                try:
+                    result = await asyncio.wait_for(
+                        self.request(
+                            self.manifest["settings"]["endpoint"],
+                            payload,
+                            **(
+                                {
+                                    "progress": stream_progress,
+                                    "client_name": client_name(self.manifest.get("id")),
+                                }
+                                if self.request is completion
+                                else {}
+                            ),
+                        ),
+                        timeout=self.remaining(),
+                    )
+                    break
+                except RouterSwitching as exc:
+                    if not exc.rejected:
+                        raise
+                    # The router refused the request while draining; nothing
+                    # was generated. Wait outside active time, then resend the
+                    # same request to the same pinned model (contract §7).
+                    self.publish("runtime_wait")
+                    await self.ready()
+                    self.publish(prior)
+                    started = time.monotonic()
         except BaseException as exc:
             saved = {
                 **getattr(exc, "evidence", {}),
@@ -598,6 +614,7 @@ This is an application coding task. For optional browser interaction checks, Nod
         failure = None
         message = None
         commit_message = None
+        router_failure = None
         try:
             self.publish("planning")
             approved = False
@@ -790,7 +807,10 @@ This is an application coding task. For optional browser interaction checks, Nod
         except Exception as exc:
             status = "infrastructure_error"
             failure = "infrastructure_error"
-            message = str(exc)
+            # Offline, switching and identity changes keep their class so the
+            # controller can tell a failed run from an invalid one.
+            message = error_message(exc)
+            router_failure = error_kind(exc)
         finally:
             failure_phase = self.ledger.phase if status != "passed" else None
             self.ledger.switch(None)
@@ -814,6 +834,8 @@ This is an application coding task. For optional browser interaction checks, Nod
                 "commit_message": commit_message,
                 **self.ledger.snapshot(),
             }
+            if router_failure:
+                row["error_kind"] = router_failure
             atomic_json(self.root / "attempt.json", row)
             if status == "passed":
                 (self.root / "commit-message.txt").write_text(

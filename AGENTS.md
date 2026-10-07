@@ -21,7 +21,16 @@ Rules for agents and contributors:
   `frontend/test-results`, caches, `data/`, `.env`) are gitignored and do not
   make the checkout dirty. New generated outputs must be added to `.gitignore`.
 
+## LLM Router contract
+
+- Router integration (benchmark requests, model discovery, run identity,
+  availability and retries) must uphold `docs/llm-router-contract.md`. Update
+  its conformance map with any such change. Benchmarks never fall back to
+  another model. Never edit the vendored contract text; replace it only when
+  the LLM Router maintainer announces a new version.
+
 ## Verification
 
+- Python: `PYTHONPATH=.:vendor .venv/bin/pytest tests vendor/tests`.
 - Frontend: `cd frontend && npm ci && npm run build && npx playwright test`.
 - See `README.md` (Development) and `docs/recovery.md` for update semantics.

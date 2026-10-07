@@ -5,7 +5,7 @@ import signal
 import subprocess
 import shutil
 import sys
-from common import atomic_json, read_json
+from common import atomic_json, classified, client_name, read_json
 from . import config
 from .session_catalog import attach
 from .session_reviews import reviews
@@ -48,6 +48,7 @@ def launch(m):
                 LITELLM_TELEMETRY="False",
                 DO_NOT_TRACK="1",
                 STUDIO_CONTROLLER_PID=str(os.getpid()),
+                BENCH_STUDIO_CLIENT_NAME=client_name(m["id"]),
             ),
             start_new_session=True,
         )
@@ -104,7 +105,7 @@ def poll(m):
         else {"status": "failed", "error": "Session exited without an outcome"}
     )
     if child.returncode or outcome["status"] != "completed":
-        raise RuntimeError(outcome.get("error", "Session failed"))
+        raise classified(outcome.get("error_kind"), outcome.get("error", "Session failed"))
     finish(m, "completed")
 
 

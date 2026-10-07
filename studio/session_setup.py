@@ -435,9 +435,11 @@ class SessionSetup:
                     if m["available"]
                     and (suite == "coding-sessions" or m.get("vision") is True)
                     and (
+                        # A configured target is a service ID or alias, never a
+                        # canonical model ID (LLM Router contract §3).
                         not requested
                         or requested in {
-                            m["alias"], m.get("canonical"),
+                            m["alias"],
                             *m.get("resolved", {}).get("metadata", {}).get("aliases", []),
                         }
                     )

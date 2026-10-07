@@ -439,6 +439,18 @@
   margin-top: 8px;
   color: var(--bs-muted);
 }
+#app .bs-offline {
+  border: 1px dashed var(--bs-line);
+  border-radius: 10px;
+  padding: 12px 15px;
+  font-size: 12px;
+  color: var(--bs-muted);
+  margin: -8px 0 20px;
+}
+#app .bs-offline ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
 #app .bs-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -5,83 +5,82 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from common import (check_drift, identity, require_idle, resolve, valid_sample,
+import router_fixture
+from common import (RuntimeUnavailable, check_drift, identity, require_idle, resolve, valid_sample,
                     validate_results, write_index, atomic_json, render_index)
 from worker import compatibility_probe
 
 
 @pytest.fixture
 def snap():
-    return {"runtime": {"ready": True, "profile": "daytime-27b", "deployed_revision": "runtime1",
-                        "maintenance": {"draining": False, "active_requests": 0, "queued_requests": 0},
-                        "services": [{"model": "model-a", "id": "container1", "image_id": "image1",
-                                      "name": "Daytime", "healthy": True, "running": True, "processing": False}]},
-            "models": {"data": [{"id": "daytime", "x_ollama_router": {
-                "complete": True, "health": {"available": True}, "upstream_model": "model-a",
-                "context_window": 163840, "context_safety_reserve": 1024, "revision": "weights1",
-                "quantization": "Q8_0", "reasoning": {"default": "default"}}}]}}
+    # Contract 1.1 capabilities document (Daytime only, no offline services)
+    # plus AI Runtime status for container identity.
+    return router_fixture.snapshot(
+        [router_fixture.model("model-a", "daytime", context=163840,
+                              reasoning={"default": "default"})],
+        [router_fixture.service("model-a", "container1")],
+        configuration="daytime-27b",
+    )
 
 
 @pytest.mark.parametrize("names", [
     ["new-model"],
     ["new-model", "vendor/second:70b", "third-model"],
 ])
-def test_discovery_uses_canonical_models_without_fixed_aliases(monkeypatch, names):
-    from common import safe_target
+def test_discovery_offers_service_ids_and_reports_canonical_models(monkeypatch, names):
     from studio import discovery
 
-    snap = {
-        "runtime": {
-            "ready": True,
-            "services": [
-                {"model": name, "id": f"remote-{i}", "healthy": True,
-                 "running": True, "processing": False}
-                for i, name in enumerate(names)
-            ],
-        },
-        "models": {"data": [
-            {"id": name, "x_ollama_router": {
-                "upstream_model": name, "alias": False,
-                "aliases": ["local-active"] if i == 0 else [],
-                "complete": True, "health": {"available": True},
-                "context_window": 32768,
-            }}
-            for i, name in enumerate(names)
-        ]},
-    }
-    snap["models"]["data"].append({
-        "id": "local-active", "x_ollama_router": {
-            **snap["models"]["data"][0]["x_ollama_router"], "alias": True,
-        },
-    })
-    monkeypatch.setattr(discovery, "snapshot", lambda _: snap)
+    services = ["daytime", "nighttime", "evening"][: len(names)]
+    snap = router_fixture.snapshot(
+        [router_fixture.model(name, service) for name, service in zip(names, services)],
+        [router_fixture.service(name, f"remote-{i}") for i, name in enumerate(names)],
+    )
+    monkeypatch.setattr(discovery, "fetch", lambda _: snap)
     models = discovery.discover()["models"]
     assert [m["canonical"] for m in models] == names
-    assert [m["alias"] for m in models] == [safe_target(name) for name in names]
+    # Runs start from service IDs; canonical IDs are information only.
+    assert [m["alias"] for m in models] == services
     assert all(m["available"] for m in models)
 
 
 def test_discovery_marks_unhealthy_remote_model_unavailable(monkeypatch):
     from studio import discovery
 
-    snap = {
-        "runtime": {"ready": True, "services": [
-            {"model": "future", "healthy": False, "running": True},
-        ]},
-        "models": {"data": [{"id": "future", "x_ollama_router": {
-            "complete": True, "health": {"available": False},
-            "context_window": 8192,
-        }}]},
-    }
-    monkeypatch.setattr(discovery, "snapshot", lambda _: snap)
+    snap = router_fixture.snapshot(
+        [router_fixture.model("future", "daytime", available=False, context=8192)],
+        [router_fixture.service("future", healthy=False)],
+    )
+    monkeypatch.setattr(discovery, "fetch", lambda _: snap)
     assert discovery.discover()["models"][0]["available"] is False
+
+
+def test_discovery_lists_offline_services_and_router_state(monkeypatch):
+    from studio import discovery
+
+    snap = router_fixture.solo()
+    monkeypatch.setattr(discovery, "fetch", lambda _: snap)
+    data = discovery.discover()
+    assert [m["alias"] for m in data["models"]] == ["daytime"]
+    assert data["offline_services"] == [{
+        "service": "nighttime", "aliases": ["nighttime"], "model": "night-a",
+        "display_name": "Night-A", "reason": "exclusive_configuration",
+    }]
+    assert data["router"]["configuration"] == "solo-test"
+    model = data["models"][0]
+    assert model["configuration"] == "solo-test"
+    assert model["capability_score"] == 68.3 and model["nsfw"] is False
+    monkeypatch.setattr(discovery, "fetch", lambda _: router_fixture.draining(snap))
+    data = discovery.discover()
+    assert data["router"]["switching"] is True
+    assert "switching" in data["models"][0]["error"]
 
 
 def test_discovery_follows_future_runtime_model_and_context(snap):
     before = resolve(snap, "daytime")
-    after = copy.deepcopy(snap)
-    after["models"]["data"][0]["x_ollama_router"].update(upstream_model="flash-next", context_window=131072)
-    after["runtime"]["services"][0].update(model="flash-next", id="container2")
+    after = router_fixture.snapshot(
+        [router_fixture.model("flash-next", "daytime", context=131072)],
+        [router_fixture.service("flash-next", "container2")],
+    )
     assert resolve(after, "daytime")["canonical"] == "flash-next"
     assert resolve(after, "daytime")["context"] == 131072
     with pytest.raises(RuntimeError, match="changed during"):
@@ -91,7 +90,7 @@ def test_discovery_follows_future_runtime_model_and_context(snap):
 def test_same_name_different_weights_invalidates_run(snap):
     before = resolve(snap, "daytime")
     after = copy.deepcopy(snap)
-    after["models"]["data"][0]["x_ollama_router"]["revision"] = "weights2"
+    after["capabilities"]["models"][0]["metadata"]["revision"] = "weights2"
     with pytest.raises(RuntimeError, match="changed during"):
         check_drift(before, resolve(after, "daytime"))
 
@@ -119,8 +118,9 @@ def test_absent_alias_never_falls_back(snap):
 
 
 def test_partial_metadata_is_rejected(snap):
-    snap["models"]["data"][0]["x_ollama_router"]["complete"] = False
-    with pytest.raises(RuntimeError):
+    snap["capabilities"]["models"][0]["metadata"]["complete"] = False
+    # Incomplete metadata is a failed source, not a new model: unavailable.
+    with pytest.raises(RuntimeUnavailable, match="incomplete"):
         resolve(snap, "daytime")
 
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import os
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -188,6 +189,9 @@ class RunResult:
     truncated_in_reasoning: bool = False
     wall_ms: float | None = None
     error: str | None = None
+    # Bench Studio: the LLM Router's machine-readable `error.code` (or the
+    # `x_router.stop_reason` of an incomplete stream frame), when it sent one.
+    error_code: str | None = None
     timing_version: int | None = None
     first_output_ms: float | None = None
     last_output_ms: float | None = None
@@ -339,13 +343,39 @@ def _auth_headers(api_key: str | None) -> dict[str, str]:
     return {"Authorization": "Bearer " + api_key} if api_key else {}
 
 
+def _client_headers() -> dict[str, str]:
+    """Bench Studio: identify the caller (LLM Router `X-Client-Name`)."""
+    name = os.environ.get("BETTERBENCH_CLIENT_NAME")
+    return {"X-Client-Name": name} if name else {}
+
+
+def _error_code(body) -> str | None:
+    """Bench Studio: `error.code` from a JSON error body or an error frame."""
+    try:
+        if isinstance(body, (bytes, str)):
+            body = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    if isinstance(error, dict) and error.get("code"):
+        return str(error["code"])
+    router = body.get("x_router")
+    if isinstance(router, dict) and router.get("stop_reason") and (
+            error or router.get("status") == "incomplete"):
+        return str(router["stop_reason"])
+    return None
+
+
 def _stream_headers(api_key: str | None) -> dict[str, str]:
     return {"Content-Type": "application/json", "Accept": "text/event-stream",
-            **_auth_headers(api_key)}
+            **_auth_headers(api_key), **_client_headers()}
 
 
 def _json_headers(api_key: str | None) -> dict[str, str]:
-    return {"Accept": "application/json", **_auth_headers(api_key)}
+    return {"Accept": "application/json", **_auth_headers(api_key),
+            **_client_headers()}
 
 
 def stream_chat_sync(base_url: str, model: str, messages: list[dict], *,
@@ -368,6 +398,7 @@ def stream_chat_sync(base_url: str, model: str, messages: list[dict], *,
                    timeout=timeout)
     tl = _Timeline()
     usage: dict | None = None
+    stream_failed = False
     t0 = time.perf_counter()
     telemetry = StreamTelemetry(t0)
     try:
@@ -376,7 +407,9 @@ def stream_chat_sync(base_url: str, model: str, messages: list[dict], *,
                      _stream_headers(api_key))
         resp = conn.getresponse()
         if resp.status != 200:
-            res.error = f"HTTP {resp.status}: {resp.read()[:300].decode('utf-8','replace')}"
+            body = resp.read(65536)
+            res.error = f"HTTP {resp.status}: {body[:300].decode('utf-8','replace')}"
+            res.error_code = _error_code(body)
             return res
         for raw in resp:                       # yields dechunked lines
             line = raw.decode("utf-8", "replace").strip()
@@ -390,6 +423,14 @@ def stream_chat_sync(base_url: str, model: str, messages: list[dict], *,
             except json.JSONDecodeError:
                 continue
             telemetry.observe(obj, time.perf_counter())
+            router = obj.get("x_router")
+            if obj.get("error") or (isinstance(router, dict)
+                                    and router.get("status") == "incomplete"):
+                # Bench Studio: an error inside the stream ends it incomplete.
+                res.error = "stream error: " + json.dumps(obj.get("error") or router)[:300]
+                res.error_code = _error_code(obj)
+                stream_failed = True
+                break
             if obj.get("usage"):
                 usage = obj["usage"]
             choices = obj.get("choices") or []
@@ -419,7 +460,10 @@ def stream_chat_sync(base_url: str, model: str, messages: list[dict], *,
             conn.close()
         except Exception:
             pass
-    return _finalize(res, tl, t0, time.perf_counter(), usage)
+    res = _finalize(res, tl, t0, time.perf_counter(), usage)
+    if stream_failed:
+        res.ok = False    # Bench Studio: never complete after an error frame
+    return res
 
 
 async def stream_chat(base_url: str, model: str, messages: list[dict],

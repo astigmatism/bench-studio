@@ -272,6 +272,8 @@ function App() {
     [profiles, setProfiles] = useState<Obj[]>([]),
     [models, setModels] = useState<Obj[]>([]),
     [runtime, setRuntime] = useState<Obj>({}),
+    [router, setRouter] = useState<Obj>({}),
+    [offline, setOffline] = useState<Obj[]>([]),
     [health, setHealth] = useState<Obj>({}),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
@@ -341,14 +343,21 @@ function App() {
       backgroundLoading.current = false;
     }
   }, [load]);
+  // Models come from the LLM Router capabilities document. The runner
+  // subscribes to router changes and records each new revision as an event,
+  // so the list refreshes on those events; a slow poll covers missed events.
   const loadModels = useCallback(async () => {
     try {
       const d = await api("/models");
       setModels(d.models);
       setRuntime(d.runtime);
+      setRouter(d.router || {});
+      setOffline(d.offline_services || []);
     } catch (e) {
       setModels([]);
       setRuntime({ error: String(e), ready: false });
+      setRouter({ reachable: false });
+      setOffline([]);
     }
   }, []);
   useEffect(() => {
@@ -356,9 +365,21 @@ function App() {
     loadModels();
     const es = new EventSource("/api/events");
     let pending: ReturnType<typeof setTimeout> | undefined;
+    let modelsPending: ReturnType<typeof setTimeout> | undefined;
     es.onopen = () => setConnection(true);
     es.onerror = () => setConnection(false);
-    es.onmessage = () => {
+    es.onmessage = (message) => {
+      let type = "";
+      try {
+        type = JSON.parse(message.data).type;
+      } catch {
+        type = "";
+      }
+      if (type === "router_capabilities" && !modelsPending)
+        modelsPending = setTimeout(() => {
+          loadModels();
+          modelsPending = undefined;
+        }, 300);
       if (!pending)
         pending = setTimeout(() => {
           refreshInBackground();
@@ -366,14 +387,14 @@ function App() {
           pending = undefined;
         }, 500);
     };
-    const timer = setInterval(() => {
-      loadModels();
-      refreshInBackground();
-    }, 15000);
+    const timer = setInterval(refreshInBackground, 15000);
+    const modelTimer = setInterval(loadModels, 60000);
     return () => {
       es.close();
       clearInterval(timer);
+      clearInterval(modelTimer);
       clearTimeout(pending);
+      clearTimeout(modelsPending);
     };
   }, [load, loadModels, refreshInBackground]);
   const navigate = (v: string) => {
@@ -550,11 +571,21 @@ function App() {
           <span
             className="bs-dot"
             style={{
-              background: runtime.ready ? "var(--bs-good)" : "var(--bs-warn)",
+              background:
+                runtime.ready && !router.switching
+                  ? "var(--bs-good)"
+                  : "var(--bs-warn)",
             }}
           />
           {models.length} {models.length === 1 ? "model" : "models"} ·{" "}
-          {runtime.ready ? "runtime ready" : "runtime unavailable"}
+          {router.switching
+            ? "router switching configuration"
+            : router.reachable === false
+              ? "router unreachable"
+              : runtime.ready
+                ? "runtime ready"
+                : "runtime unavailable"}
+          {router.configuration ? ` · ${router.configuration}` : ""}
         </div>
       </header>
       <main className="bs-main">
@@ -1040,6 +1071,8 @@ function App() {
           <Launcher
             profiles={profiles}
             models={models}
+            router={router}
+            offline={offline}
             initialProfile={launchProfile}
             rerun={rerun}
             setup={health.session_setup || {}}
@@ -1186,6 +1219,8 @@ function DeleteRunsDialog({
 function Launcher({
   profiles,
   models,
+  router,
+  offline,
   initialProfile,
   rerun,
   setup,
@@ -1199,6 +1234,8 @@ function Launcher({
 }: {
   profiles: Obj[];
   models: Obj[];
+  router: Obj;
+  offline: Obj[];
   initialProfile: string;
   rerun: Obj | null;
   setup: Obj;
@@ -1415,6 +1452,13 @@ function Launcher({
         </div>
       )}
       <h3>1. Choose a loaded model</h3>
+      {router.switching && (
+        <div className="bs-alert" role="status" data-testid="router-switching">
+          <Info size={16} />
+          Router switching configuration. Benchmarks pause between requests and
+          resume with the same model; queue new runs when the switch finishes.
+        </div>
+      )}
       <div className="bs-models">
         {models.map((m) => (
           <button
@@ -1446,7 +1490,12 @@ function Launcher({
             <span className="bs-spread">
               <span className="bs-inline">
                 <Layers size={17} />
-                <strong>{label(m.alias)}</strong>
+                <strong>{label(m.service || m.alias)}</strong>
+                {m.nsfw === true && (
+                  <span className="bs-pill warn" title="Declared abliterated (refusals removed) by AI Runtime">
+                    NSFW
+                  </span>
+                )}
               </span>
               {modelSelection !== null &&
                 modelSelection.alias === m.alias &&
@@ -1460,6 +1509,13 @@ function Launcher({
               {fmt(m.context, 0)} context
               {m.gpus?.length ? ` · ${m.gpus.join(" + ")}` : ""}
             </span>
+            <span className="bs-model-name bs-model-facts">
+              Service {m.service || m.alias}
+              {m.configuration ? ` · configuration ${m.configuration}` : ""}
+              {typeof m.capability_score === "number"
+                ? ` · capability score ${fmt(m.capability_score, 1)}`
+                : ""}
+            </span>
             <span className="bs-model-name">
               {m.available
                 ? m.processing
@@ -1470,6 +1526,23 @@ function Launcher({
           </button>
         ))}
       </div>
+      {offline.length > 0 && (
+        <div className="bs-offline" data-testid="offline-services">
+          <strong>
+            Offline in configuration {router.configuration || "unknown"}
+          </strong>
+          <ul>
+            {offline.map((o) => (
+              <li key={o.service || o.model}>
+                {label(o.service || o.model)}
+                {o.display_name ? ` · ${o.display_name}` : ""} ·{" "}
+                {o.reason || "stopped by the configuration"}. Benchmarks never
+                substitute another model; queue it when it is back.
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {!models.length && (
         <div className="error">
           Model discovery is unavailable. Check the runtime before launching.
@@ -2008,6 +2081,29 @@ function RunDetail({
           <dl className="bs-kv">
             <dt>Model</dt>
             <dd>{resolved.canonical}</dd>
+            {resolved.router?.service && (
+              <>
+                <dt>Service / configuration</dt>
+                <dd>
+                  {resolved.router.service}
+                  {resolved.router.configuration
+                    ? ` · ${resolved.router.configuration}`
+                    : ""}
+                </dd>
+                <dt>Capability score / NSFW</dt>
+                <dd>
+                  {typeof resolved.router.capability_score === "number"
+                    ? fmt(resolved.router.capability_score, 1)
+                    : "—"}{" "}
+                  /{" "}
+                  {resolved.router.nsfw === true
+                    ? "yes"
+                    : resolved.router.nsfw === false
+                      ? "no"
+                      : "undeclared"}
+                </dd>
+              </>
+            )}
             <dt>Context window</dt>
             <dd>{fmt(resolved.context, 0)} tokens</dd>
             <dt>GPUs</dt>

@@ -2,7 +2,7 @@
 
 import os, subprocess, sys, tomllib
 from pathlib import Path
-from common import atomic_json, read_json
+from common import atomic_json, classified, client_name, read_json
 from . import config
 
 _processes = {}
@@ -66,6 +66,7 @@ def launch_agent(m):
                 LITELLM_TELEMETRY="False",
                 DO_NOT_TRACK="1",
                 BENCH_STUDIO_MANIFEST=str(path),
+                BENCH_STUDIO_CLIENT_NAME=client_name(m["id"]),
             ),
             start_new_session=True,
         )
@@ -97,7 +98,7 @@ def poll_agent(m):
     outcome = read_json(outcome_path) if outcome_path.exists() else {"status": "failed", "error": "Harbor exited without an outcome; partial trial evidence retained"}
     _processes.pop(m["id"], None)
     if child.returncode or outcome["status"] != "completed":
-        raise RuntimeError(outcome.get("error", "Harbor failed"))
+        raise classified(outcome.get("error_kind"), outcome.get("error", "Harbor failed"))
     finish(m, "completed")
 
 

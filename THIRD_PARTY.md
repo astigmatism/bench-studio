@@ -4,7 +4,8 @@ Bench Studio's original application code is MIT licensed. Third-party material r
 
 | Component | Pin | Use / license |
 |---|---|---|
-| [BetterBench](https://github.com/GGZ14/BetterBench) | v0.6.0, d00ad5ec8098c06584a88ec3468bacd37d5ed098 | Vendored engine with additive Studio timing capture in `client.py`, `runner.py`, and `telemetry.py`; scoring formulas and upstream license retained. `upstream-source.json` records the original upstream file digests. |
+| [BetterBench](https://github.com/GGZ14/BetterBench) | v0.6.0, d00ad5ec8098c06584a88ec3468bacd37d5ed098 | Vendored engine with additive Studio timing capture in `client.py`, `runner.py`, and `telemetry.py`, plus LLM Router error codes, stream error frames and `X-Client-Name` in `client.py` (tested in `vendor/tests/test_router_errors.py`); scoring formulas and upstream license retained. `upstream-source.json` records the original upstream file digests. |
+| [LLM Router](https://github.com/astigmatism/llm-router) client contract and reference client | 1ecc04758ad4d0a6954713defad4d02ff3e8f351 | `docs/llm-router-contract.md` (verbatim, version 1.1) and `studio/router_watch.py` (the Python reference client, with one marked change adding request headers). |
 | [EvalPlus](https://github.com/evalplus/evalplus) | 0.3.1 | Executable Python evaluation, Apache-2.0; installed from locked package. |
 | [HumanEval+](https://github.com/evalplus/humanevalplus_release) | v0.1.10 | Downloaded at build time; source digest in `datasets/coding-manifest.json`. |
 | [MultiPL-E](https://github.com/nuprl/MultiPL-E) | 3025a531af7450e7df8b96fe0440e9804480bbad | TypeScript verifier; license copied into execution image. HF dataset revision 28441b6024e71d4a1c1c0f6bf171c935cd5a43f2. |

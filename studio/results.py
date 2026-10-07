@@ -21,11 +21,15 @@ _summary_lock = threading.Lock()
 
 
 def baseline_slot(m, target):
+    # Results belong to the model measured: runs target service IDs but are
+    # keyed by the canonical model pinned for the run (older runs targeted
+    # canonical IDs, so their slots are unchanged).
+    model = m.get("resolved", {}).get(target, {}).get("canonical") or target
     if m.get("family") in {"session", "vision"}:
         from .profiles import fingerprint
 
-        return f"sessions-v1:{fingerprint(workload(m))}:{target}"
-    return f"{m.get('profile')}:{m.get('profile_spec', {}).get('size', 'standard')}:{m.get('mode', 'sequential')}:{target}"
+        return f"sessions-v1:{fingerprint(workload(m))}:{model}"
+    return f"{m.get('profile')}:{m.get('profile_spec', {}).get('size', 'standard')}:{m.get('mode', 'sequential')}:{model}"
 
 
 def import_legacy():
@@ -60,9 +64,16 @@ def summarize(m):
     result = {}
     root = config.DATA / "runs" / m["id"]
     for target in m.get("requested_targets", []):
+        resolved = m.get("resolved", {}).get(target, {})
+        router = resolved.get("router") or {}
         item = {
             "target": target,
-            "canonical": m.get("resolved", {}).get(target, {}).get("canonical", target),
+            "canonical": resolved.get("canonical", target),
+            # Report facts from the router at launch; not part of the identity.
+            "service": router.get("service"),
+            "configuration": router.get("configuration"),
+            "capability_score": router.get("capability_score"),
+            "nsfw": router.get("nsfw"),
             "score": None,
             "unit": "",
             "metrics": [],

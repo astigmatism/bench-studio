@@ -12,7 +12,18 @@ from pathlib import Path
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import atomic_json, read_json, now, resolve, snapshot, check_drift, wait_for_runtime
+from common import (
+    BenchmarkItemError,
+    atomic_json,
+    client_headers,
+    error_kind,
+    error_message,
+    now,
+    read_json,
+    router_error,
+    send_when_ready,
+    wait_for_runtime,
+)
 from betterbench.telemetry import StreamTelemetry
 
 ROOT = Path("/app/datasets/cache")
@@ -57,7 +68,7 @@ def choose_tasks(spec):
     return result
 
 
-def generate(endpoint, canonical, task, params, progress):
+def generate(endpoint, canonical, task, params, progress, *, run_id=None, target=None):
     payload = {
         "model": canonical,
         "messages": [
@@ -96,9 +107,16 @@ def generate(endpoint, canonical, task, params, progress):
     try:
         with httpx.Client(timeout=httpx.Timeout(600, connect=15)) as client:
             with client.stream(
-                "POST", endpoint + "/chat/completions", json=payload
+                "POST",
+                endpoint + "/chat/completions",
+                json=payload,
+                headers=client_headers(run_id),
             ) as response:
-                response.raise_for_status()
+                if response.is_error:
+                    response.read()
+                    raise router_error(
+                        response.status_code, response.content, target=target or canonical
+                    )
                 for line in response.iter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -108,8 +126,12 @@ def generate(endpoint, canonical, task, params, progress):
                         break
                     chunk = json.loads(value)
                     telemetry.observe(chunk, time.monotonic())
-                    if chunk.get("error"):
-                        raise RuntimeError(str(chunk["error"]))
+                    router = chunk.get("x_router")
+                    if chunk.get("error") or (
+                        isinstance(router, dict) and router.get("status") == "incomplete"
+                    ):
+                        # An error inside the stream: the answer is incomplete (§9).
+                        raise router_error(None, chunk, target=target or canonical, stream=True)
                     usage = chunk.get("usage") or usage
                     for c in chunk.get("choices", []):
                         finish = c.get("finish_reason") or finish
@@ -172,7 +194,6 @@ def main(path):
         atomic_json(out / "tasks.json", tasks)
         responses = []
         for i, task in enumerate(tasks):
-            wait_for_runtime(m["settings"], t, m["resolved"][t])
 
             def progress(s):
                 with mutex:
@@ -192,15 +213,45 @@ def main(path):
             progress("Starting request")
             log(f'[{t}] task {i+1}/{len(tasks)} {task["id"]}')
             try:
-                r = generate(
-                    m["settings"]["endpoint"],
-                    m["resolved"][t]["canonical"],
-                    task,
-                    m["profile_spec"]["parameters"],
-                    progress,
+                # Waits (switches, health) happen before the request and are
+                # not part of its measured duration. Requests always use the
+                # canonical model pinned for this run; nothing falls back.
+                r = send_when_ready(
+                    m["settings"],
+                    t,
+                    m["resolved"][t],
+                    lambda: generate(
+                        m["settings"]["endpoint"],
+                        m["resolved"][t]["canonical"],
+                        task,
+                        m["profile_spec"]["parameters"],
+                        progress,
+                        run_id=m["id"],
+                        target=t,
+                    ),
+                    on_wait=lambda exc: progress(f"waiting: {exc}"),
                 )
+            except BenchmarkItemError as exc:
+                # The router rejected this item (context_length_exceeded): the
+                # task fails; the run continues with the same model.
+                responses.append(
+                    dict(
+                        getattr(exc, "evidence", {}),
+                        id=task["id"],
+                        language=task["language"],
+                        response="",
+                        reasoning="",
+                        duration=getattr(exc, "evidence", {}).get("elapsed_seconds", 0),
+                        error=str(exc),
+                        error_code=exc.code,
+                        failure_kind="context_exhausted",
+                    )
+                )
+                atomic_json(out / "responses.json", responses)
+                log(f'[{t}] {task["id"]} rejected by the router: {exc}')
+                continue
             except BaseException as exc:
-                responses.append(dict(getattr(exc, "evidence", {}), id=task["id"], language=task["language"], error=str(exc)))
+                responses.append(dict(getattr(exc, "evidence", {}), id=task["id"], language=task["language"], error=error_message(exc)))
                 atomic_json(out / "responses.json", responses)
                 raise
             responses.append(r)
@@ -227,9 +278,11 @@ def main(path):
         )
         save()
     except BaseException as e:
-        m.update(status="failed", error=str(e))
+        m.update(status="failed", error=error_message(e))
+        if error_kind(e):
+            m["error_kind"] = error_kind(e)
         save()
-        log("FAILED: " + str(e))
+        log("FAILED: " + error_message(e))
         raise
 
 

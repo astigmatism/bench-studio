@@ -2,6 +2,7 @@ import asyncio, copy, json, importlib.util
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
+import router_fixture
 from common import atomic_json, now, identity, model_fingerprint
 from studio import config, db, profiles, results, runner
 from studio.api import app
@@ -31,7 +32,7 @@ def client(tmp_path, monkeypatch):
         },
     }
     snap = {
-        "models": {"data": []},
+        "capabilities": router_fixture.capabilities([]),
         "runtime": {"ready": True, "maintenance": {}, "services": []},
     }
     monkeypatch.setattr(
@@ -147,25 +148,26 @@ def test_rerun_fingerprint_detects_same_canonical_replacement(client):
     assert model_fingerprint(replacement) != saved
 
 
-def test_new_launch_is_one_model_and_legacy_alias_remains_accepted(client, monkeypatch):
+def test_new_launch_is_one_service_and_aliases_record_the_service(client, monkeypatch):
     c, resolved, _ = client
-    canonical = {**resolved, "alias": "model-a", "metadata": {
-        **resolved["metadata"], "aliases": ["daytime", "local-active"],
-    }}
+    daytime = {**resolved, "router": {"service": "daytime", "aliases": ["local-active", "daytime"]}}
     monkeypatch.setattr(
         "studio.discovery.discover",
         lambda: {"models": [{
-            "alias": "model-a", "canonical": "model-a", "available": True,
-            "resolved": canonical,
+            "alias": "daytime", "canonical": "model-a", "available": True,
+            "resolved": daytime,
         }]},
     )
-    selected = launch(c, targets=["model-a"])
+    selected = launch(c, targets=["daytime"])
     assert selected.status_code == 202
-    assert selected.json()["resolved"]["model-a"]["canonical"] == "model-a"
-    legacy = launch(c, idempotency_key="legacy-alias-request", targets=["daytime"])
+    assert selected.json()["requested_targets"] == ["daytime"]
+    # The run starts from the service ID and pins the canonical model behind it.
+    assert selected.json()["resolved"]["daytime"]["canonical"] == "model-a"
+    legacy = launch(c, idempotency_key="legacy-alias-request", targets=["local-active"])
     assert legacy.status_code == 202
+    assert legacy.json()["requested_targets"] == ["daytime"]
     assert legacy.json()["resolved"]["daytime"]["alias"] == "daytime"
-    multi = launch(c, idempotency_key="new-multi-request", targets=["model-a", "daytime"])
+    multi = launch(c, idempotency_key="new-multi-request", targets=["daytime", "nighttime"])
     assert multi.status_code == 400
     assert launch(c, idempotency_key="new-parallel-request", mode="parallel").status_code == 400
     prior = legacy.json()
@@ -178,31 +180,30 @@ def test_new_launch_is_one_model_and_legacy_alias_remains_accepted(client, monke
     assert retry.status_code == 202 and retry.json()["id"] == prior["id"]
 
 
-def test_canonical_selection_wins_over_conflicting_legacy_alias(client, monkeypatch):
+def test_canonical_ids_are_never_selected_and_offline_services_never_substituted(client, monkeypatch):
     c, resolved, _ = client
-    first = {**resolved, "metadata": {
-        **resolved["metadata"], "aliases": ["second-model"],
-    }}
-    second = {**resolved, "alias": "second-model", "canonical": "second-model"}
-    monkeypatch.setattr(
-        "studio.discovery.discover",
-        lambda: {"models": [
-            {"alias": "model-a", "canonical": "model-a", "available": True, "resolved": first},
-            {"alias": "second-model", "canonical": "second-model", "available": True, "resolved": second},
-        ]},
-    )
-    response = launch(c, targets=["second-model"])
-    assert response.status_code == 202
-    assert response.json()["resolved"]["second-model"]["canonical"] == "second-model"
-    monkeypatch.setattr(
-        "studio.discovery.discover",
-        lambda: {"models": [
-            {"alias": "model-a", "canonical": "model-a", "available": True, "resolved": first},
-            {"alias": "second-model", "canonical": "second-model", "available": False},
-        ]},
-    )
-    unavailable = launch(c, idempotency_key="unavailable-canonical", targets=["second-model"])
-    assert unavailable.status_code == 400
+    data = {
+        "models": [{"alias": "daytime", "canonical": "model-a", "available": True, "resolved": resolved}],
+        "offline_services": [{"service": "nighttime", "aliases": ["nighttime"],
+                              "model": "night-a", "reason": "exclusive_configuration"}],
+        "router": {"configuration": "solo-test", "switching": False},
+    }
+    monkeypatch.setattr("studio.discovery.discover", lambda: data)
+    canonical = launch(c, targets=["model-a"])
+    assert canonical.status_code == 400
+    assert "service ID" in canonical.json()["detail"]
+    offline = launch(c, idempotency_key="offline-nighttime", targets=["nighttime"])
+    assert offline.status_code == 400
+    assert "offline in runtime configuration solo-test" in offline.json()["detail"]
+    assert db.runs() == []
+    data["router"] = {"switching": True, "switching_reason": "router switching configuration"}
+    switching = launch(c, idempotency_key="while-switching", targets=["daytime"])
+    assert switching.status_code == 400 and "switching" in switching.json()["detail"]
+    data["router"] = {}
+    data["models"][0] = {"alias": "daytime", "canonical": "model-a", "available": False,
+                         "error": "Model daytime is temporarily unavailable"}
+    unavailable = launch(c, idempotency_key="unavailable-daytime", targets=["daytime"])
+    assert unavailable.status_code == 400 and "temporarily unavailable" in unavailable.json()["detail"]
 
 
 def test_historical_multi_model_runs_remain_readable_when_discovery_fails(client, monkeypatch):
@@ -271,16 +272,12 @@ def test_queued_and_active_runs_detect_canonical_replacement(client, monkeypatch
 def test_remote_evidence_uses_only_router_and_runtime_responses(client, monkeypatch):
     c, resolved, _ = client
     canonical = resolved["canonical"]
-    snap = {
-        "runtime": {"services": [{
-            "model": canonical, "container_name": "remote-model-container",
-            "vision_device": "GPU 1",
-        }]},
-        "models": {"data": [{"id": canonical, "x_ollama_router": {
-            "upstream_model": canonical, "capabilities": ["vision"],
-            "input_modalities": ["text", "image"],
-        }}]},
-    }
+    snap = router_fixture.snapshot(
+        [router_fixture.model(canonical, "daytime", capabilities=["vision"],
+                              input_modalities=["text", "image"])],
+        [{"model": canonical, "container_name": "remote-model-container",
+          "vision_device": "GPU 1"}],
+    )
     inspected = []
     monkeypatch.setattr(
         runner, "inspect",
@@ -297,14 +294,18 @@ def test_remote_evidence_uses_only_router_and_runtime_responses(client, monkeypa
     assert evidence["engine_args"][canonical] is None
     assert canonical in evidence["engine_args_unavailable"]
     assert "unavailable" in evidence["backend_defaults"][canonical]
+    # Runs target service IDs, so evidence is also keyed by service.
+    assert "unavailable" in evidence["backend_defaults"]["daytime"]
     assert evidence["vision"][canonical]["device"] == "GPU 1"
+    assert evidence["vision"]["daytime"]["device"] == "GPU 1"
+    assert evidence["router"]["configuration"]["id"] == "paired-test"
 
 
 def test_busy_queue_does_not_launch(client, monkeypatch):
     c, resolved, snap = client
     rid = launch(c).json()["id"]
     monkeypatch.setattr(runner, "snapshot", lambda _: snap)
-    monkeypatch.setattr(runner, "resolve", lambda *_: resolved)
+    monkeypatch.setattr(runner, "resolve", lambda *_, **__: resolved)
 
     def busy(*args):
         raise RuntimeError("Backend busy")
@@ -483,22 +484,13 @@ def test_arbitrary_provider_names_are_safe_and_resolve():
     name = "vendor/../model:70b"
     target = safe_target(name)
     assert "/" not in target and ":" not in target
-    snap = {
-        "runtime": {"services": [{"model": name, "healthy": True, "running": True}]},
-        "models": {
-            "data": [
-                {
-                    "id": name,
-                    "x_ollama_router": {
-                        "complete": True,
-                        "health": {"available": True},
-                        "context_window": 8192,
-                    },
-                }
-            ]
-        },
-    }
+    snap = router_fixture.snapshot(
+        [router_fixture.model(name, "daytime", context=8192)],
+        [{"model": name, "healthy": True, "running": True}],
+    )
+    # Legacy runs targeted (path-safe) canonical IDs; they still resolve.
     assert resolve(snap, target)["canonical"] == name
+    assert resolve(snap, "daytime")["canonical"] == name
 
 
 def compose_config_json(root):

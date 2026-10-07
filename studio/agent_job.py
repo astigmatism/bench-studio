@@ -2,7 +2,7 @@
 
 import asyncio, json, sys
 from pathlib import Path
-from common import read_json, atomic_json, now
+from common import read_json, atomic_json, classified, error_kind, error_message, now
 from . import config
 from .repository import collect_trials
 from .diagnostics import exception_message
@@ -80,6 +80,11 @@ async def main(path):
             job = await Job.create(JobConfig.model_validate(cfg))
             await job.run()
             from .harbor_agent import RouterLLM
+            classified_failures = RouterLLM.router_failures.get(resolved["canonical"], [])
+            for kind in ("configuration_changed", "model_offline", "router_switching", "runtime_unavailable"):
+                message = next((text for k, text in classified_failures if k == kind), None)
+                if message:
+                    raise classified(kind, message)
             failures = RouterLLM.infrastructure_errors.get(resolved["canonical"], [])
             if failures:
                 raise RuntimeError("Model transport failed: " + "; ".join(failures)[:2000])
@@ -100,7 +105,14 @@ async def main(path):
                 await target(t)
         atomic_json(root / "agent-outcome.json", {"status": "completed"})
     except BaseException as e:
-        atomic_json(root / "agent-outcome.json", {"status": "failed", "error": exception_message(e)})
+        atomic_json(
+            root / "agent-outcome.json",
+            {
+                "status": "failed",
+                "error": error_message(e) if error_kind(e) else exception_message(e),
+                "error_kind": error_kind(e),
+            },
+        )
         raise
 
 

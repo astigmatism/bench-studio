@@ -8,7 +8,17 @@ import contextlib
 import sys
 import time
 from pathlib import Path
-from common import atomic_json, now, read_json, wait_for_runtime
+from common import (
+    RouterSwitching,
+    atomic_json,
+    classified,
+    client_name,
+    error_kind,
+    error_message,
+    now,
+    read_json,
+    wait_for_runtime,
+)
 from . import db
 from .session_catalog import tasks
 from .session_reviews import create, reviews
@@ -152,6 +162,7 @@ async def run(manifest_path):
                             payload,
                             destination,
                             runtime_seconds=time.monotonic() - started,
+                            ready=lambda: ready(target),
                         )
                         row["artifact_root"] = str(destination.relative_to(root))
                         atomic_json(destination / "attempt.json", row)
@@ -217,8 +228,9 @@ async def run(manifest_path):
                         out / "result.json", summarize_attempts(rows, p, expected)
                     )
                     if row["status"] == "infrastructure_error":
-                        raise RuntimeError(
-                            row.get("detail") or "Session infrastructure failed"
+                        raise classified(
+                            row.get("error_kind"),
+                            row.get("detail") or "Session infrastructure failed",
                         )
         atomic_json(root / "session-outcome.json", {"status": "completed"})
     except BaseException as exc:
@@ -228,14 +240,15 @@ async def run(manifest_path):
                 "status": "cancelled"
                 if isinstance(exc, asyncio.CancelledError)
                 else "failed",
-                "error": str(exc) or type(exc).__name__,
+                "error": error_message(exc) or type(exc).__name__,
+                "error_kind": error_kind(exc),
             },
         )
         raise
 
 
 async def vision_attempt(
-    manifest, task, attempt, payload, destination, *, runtime_seconds=0
+    manifest, task, attempt, payload, destination, *, runtime_seconds=0, ready=None
 ):
     started = time.monotonic()
     row = {
@@ -251,9 +264,26 @@ async def vision_attempt(
         "image_dimensions": {"width": task.get("width"), "height": task.get("height")},
     }
     try:
-        response = await asyncio.wait_for(
-            completion(manifest["settings"]["endpoint"], payload), timeout=600
-        )
+        while True:
+            try:
+                response = await asyncio.wait_for(
+                    completion(
+                        manifest["settings"]["endpoint"],
+                        payload,
+                        client_name=client_name(manifest.get("id")),
+                    ),
+                    timeout=600,
+                )
+                break
+            except RouterSwitching as exc:
+                # Refused while draining: nothing was generated. Wait outside
+                # the measured interval, then resend to the same pinned model.
+                if not exc.rejected or ready is None:
+                    raise
+                waited = time.monotonic()
+                await ready()
+                runtime_seconds += time.monotonic() - waited
+                started = time.monotonic()
         atomic_json(destination / "response.json", response)
         row["requests"] = [response]
         try:
@@ -286,7 +316,9 @@ async def vision_attempt(
             detail="Vision request exceeded 600 seconds",
         )
     except Exception as exc:
-        row.update(failure_kind="infrastructure", detail=str(exc))
+        row.update(failure_kind="infrastructure", detail=error_message(exc))
+        if error_kind(exc):
+            row["error_kind"] = error_kind(exc)
     finally:
         row["active_seconds"] = time.monotonic() - started
         row["phase_seconds"] = {

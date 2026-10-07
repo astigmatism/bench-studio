@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import router_fixture
 from common import atomic_json, check_drift, resolve, RuntimeUnavailable
 from studio import profiles, runner
 from studio.diagnostics import output_diagnostics, exception_message
@@ -76,8 +77,10 @@ def test_profile_versions_and_reasoning_budgets():
 
 
 def healthy_snapshot():
-    return {'models': {'data': [{'id':'daytime','x_ollama_router': {'complete': True, 'health':{'available': True},'context_window':10000,'upstream_model':'qwen'}}]},
-            'runtime': {'services':[{'model':'qwen','id':'container','image_id':'image','healthy':True,'running':True,'started_at':'start','restart_count':0}]}}
+    return router_fixture.snapshot(
+        [router_fixture.model('qwen', 'daytime', context=10000)],
+        [router_fixture.service('qwen', 'container', image='image', started_at='start')],
+    )
 
 
 def test_transient_health_check_does_not_kill_active_run(monkeypatch):

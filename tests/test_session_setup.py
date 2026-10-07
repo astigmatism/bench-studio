@@ -102,7 +102,9 @@ def test_requested_qualification_is_durable_sequential_and_not_replayed(setup_st
     "pinned,expected",
     [
         ("", {"coding-sessions": "text-live", "vision-checks": "vision-live", "visual-design": "vision-live"}),
-        ("vision-canonical", {suite: "vision-live" for suite in SUITES}),
+        ("vision-live", {suite: "vision-live" for suite in SUITES}),
+        # Canonical IDs are pinned per run, never configured.
+        ("vision-canonical", {}),
     ],
 )
 def test_optional_checks_resolve_current_models_without_old_aliases(

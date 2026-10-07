@@ -15,7 +15,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
-from common import now, safe_target
+from common import now
 from . import config, db, discovery, profiles, results
 
 
@@ -129,24 +129,39 @@ def health():
     }
 
 
+MODEL_FIELDS = (
+    "alias", "service", "canonical", "display_name", "configuration",
+    "available", "context", "gpus", "processing", "reasoning", "vision",
+    "fingerprint", "error", "capability_score", "nsfw", "slots", "load",
+)
+
+
 @app.get("/api/models")
 def models():
+    """Current models by service ID, offline services, and router state.
+
+    Starts degraded: an unreachable router is reported, never fatal.
+    """
     try:
         data = discovery.discover()
-        fields = (
-            "alias", "canonical", "available", "context", "gpus",
-            "processing", "reasoning", "vision", "fingerprint", "error",
-        )
         return {
             "models": [
-                {key: model[key] for key in fields if key in model}
+                {key: model[key] for key in MODEL_FIELDS if key in model}
                 for model in data["models"]
             ],
+            "offline_services": data.get("offline_services", []),
+            "router": data.get("router", {}),
             "runtime": {"ready": bool(data.get("runtime", {}).get("ready"))},
         }
     except Exception as e:
         return JSONResponse(
-            {"models": [], "error": str(e), "runtime": {"ready": False}},
+            {
+                "models": [],
+                "offline_services": [],
+                "error": f"LLM Router unreachable: {e}",
+                "router": {"reachable": False},
+                "runtime": {"ready": False},
+            },
             status_code=503,
         )
 
@@ -268,6 +283,63 @@ def delete_runs(body: DeleteRuns):
     return {"deleted": ids, "cleanup_failed": cleanup_failed}
 
 
+def select_targets(data, targets):
+    """Map requested names to current services and pin their canonical models.
+
+    A new run starts from a service ID (or one of its aliases, recorded as the
+    service). Canonical IDs are pinned per run, never selected, and nothing
+    falls back: an offline or unavailable service is refused (contract §3, §5).
+    """
+    router = data.get("router") or {}
+    if router.get("switching"):
+        raise ValueError(
+            (router.get("switching_reason") or "The LLM Router is switching configuration")
+            + "; queue the benchmark when it finishes"
+        )
+    models = data["models"]
+    by_name = {}
+    for model in models:
+        resolved = model.get("resolved") or {}
+        aliases = (resolved.get("router") or {}).get("aliases") or resolved.get(
+            "metadata", {}
+        ).get("aliases", [])
+        for name in dict.fromkeys([model["alias"], *aliases]):
+            by_name.setdefault(name, []).append(model)
+    canonical = {m.get("canonical") for m in models if m.get("canonical")}
+    offline = {
+        name: entry
+        for entry in data.get("offline_services", [])
+        for name in [entry.get("service"), *entry.get("aliases", [])]
+        if name
+    }
+    services = ", ".join(sorted(m["alias"] for m in models)) or "none"
+    selected = {}
+    for target in targets:
+        matches = by_name.get(target, [])
+        if len(matches) != 1:
+            if target in canonical:
+                raise ValueError(
+                    f"Select a service ID ({services}), not the canonical model ID {target}: "
+                    "each run pins the canonical model behind its service"
+                )
+            if target in offline:
+                entry = offline[target]
+                raise ValueError(
+                    f"{target} is offline in runtime configuration "
+                    f"{router.get('configuration') or 'unknown'} ({entry.get('reason')}); "
+                    "a benchmark never substitutes another model"
+                )
+            raise ValueError("Selected model is no longer available; refresh discovery")
+        model = matches[0]
+        if not model.get("available"):
+            raise ValueError(
+                f"Selected model is no longer available ({model.get('error') or 'unavailable'}); refresh discovery"
+            )
+        service = model["alias"]
+        selected[service] = {**model["resolved"], "alias": service}
+    return selected
+
+
 @app.post("/api/runs", status_code=202)
 def launch(body: Launch):
     if body.setup_request_id and not body.qualification:
@@ -306,35 +378,7 @@ def launch(body: Launch):
             )
         profile["qualification"] = True
     profile = profiles.attach_manifest(profile)
-    data = discovery.discover()
-    available = {}
-    for model in data["models"]:
-        if model["available"]:
-            name = model["alias"]
-            available[name] = (
-                model if name not in available or available[name] is model else None
-            )
-    canonical_names = {model["alias"] for model in data["models"]}
-    for model in data["models"]:
-        if not model["available"]:
-            continue
-        resolved = model["resolved"]
-        names = [
-            model.get("canonical"),
-            *resolved.get("metadata", {}).get("aliases", []),
-        ]
-        for name in names:
-            if name and name not in canonical_names and safe_target(name) == name:
-                # Legacy aliases are accepted when unique and cannot shadow a
-                # current canonical selection ID.
-                available[name] = (
-                    model if name not in available or available[name] is model else None
-                )
-    if any(not available.get(t) for t in body.targets):
-        raise ValueError("Selected model is no longer available; refresh discovery")
-    selected = {
-        t: {**available[t]["resolved"], "alias": t} for t in body.targets
-    }
+    selected = select_targets(discovery.discover(), body.targets)
     for r in selected.values():
         from .session_catalog import vision_support
 
@@ -370,7 +414,8 @@ def launch(body: Launch):
         "created_at": now(),
         "updated_at": now(),
         "status": "queued",
-        "requested_targets": body.targets,
+        # Service IDs; the canonical model behind each is pinned in `resolved`.
+        "requested_targets": list(selected),
         "profile": profile["id"],
         "profile_spec": profile,
         "family": profile["family"],

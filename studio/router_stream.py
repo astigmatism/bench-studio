@@ -1,12 +1,18 @@
-"""Strict OpenAI-compatible SSE collection for trusted execution adapters."""
+"""Strict OpenAI-compatible SSE collection for trusted execution adapters.
+
+Failures are classified by the router's `error.code` (LLM Router client
+contract §9-§10); a benchmark never falls back to another model.
+"""
 
 import json
+import os
 import time
 import httpx
 from betterbench.telemetry import StreamTelemetry
+from common import BenchmarkItemError, client_name as default_client, router_error, router_error_code
 
 
-class ContextBudgetError(RuntimeError):
+class ContextBudgetError(BenchmarkItemError):
     """The router rejected the input before generation because it cannot fit."""
 
 
@@ -18,8 +24,20 @@ class EmptyResponseError(RuntimeError):
         self.evidence = evidence or {}
 
 
-async def completion(endpoint, payload, *, transport=None, progress=None):
+def _incomplete(chunk):
+    router = chunk.get("x_router")
+    return isinstance(router, dict) and router.get("status") == "incomplete"
+
+
+async def completion(endpoint, payload, *, transport=None, progress=None, client_name=None):
+    # `stream` is always explicit (contract §6).
     payload = dict(payload, stream=True, stream_options={"include_usage": True})
+    headers = {
+        "X-Client-Name": client_name
+        or os.environ.get("BENCH_STUDIO_CLIENT_NAME")
+        or default_client()
+    }
+    target = payload.get("model")
     content = []
     reasoning = []
     usage = None
@@ -42,7 +60,10 @@ async def completion(endpoint, payload, *, transport=None, progress=None):
             transport=transport, timeout=httpx.Timeout(600, connect=15)
         ) as client:
             async with client.stream(
-                "POST", endpoint.rstrip("/") + "/chat/completions", json=payload
+                "POST",
+                endpoint.rstrip("/") + "/chat/completions",
+                json=payload,
+                headers=headers,
             ) as response:
                 if response.is_error:
                     await response.aread()
@@ -50,21 +71,20 @@ async def completion(endpoint, payload, *, transport=None, progress=None):
                         error = response.json().get("error", {})
                     except (ValueError, AttributeError):
                         error = {}
-                    if (
-                        isinstance(error, dict)
-                        and error.get("code") == "context_length_exceeded"
-                    ):
+                    code = router_error_code(response.content)
+                    if code == "context_length_exceeded":
                         raise ContextBudgetError(
                             error.get("message", "Input context exhausted")
+                            if isinstance(error, dict)
+                            else "Input context exhausted"
                         )
-                    if (
-                        isinstance(error, dict)
-                        and error.get("code") == "EMPTY_UPSTREAM_RESPONSE"
-                    ):
+                    if code == "EMPTY_UPSTREAM_RESPONSE":
                         raise EmptyResponseError(
                             "Router error: " + str(error), evidence()
                         )
-                response.raise_for_status()
+                    raise router_error(
+                        response.status_code, response.content, target=target
+                    )
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -75,23 +95,21 @@ async def completion(endpoint, payload, *, transport=None, progress=None):
                     chunk = json.loads(value)
                     telemetry.observe(chunk, time.monotonic())
                     usage = chunk.get("usage") or usage
-                    if chunk.get("error"):
-                        if (
-                            isinstance(chunk["error"], dict)
-                            and chunk["error"].get("code") == "context_length_exceeded"
-                            and not (content or reasoning)
-                        ):
+                    if chunk.get("error") or _incomplete(chunk):
+                        # An error inside the stream ends it as incomplete (§9).
+                        code = router_error_code(chunk)
+                        error = chunk.get("error")
+                        if code == "context_length_exceeded" and not (content or reasoning):
                             raise ContextBudgetError(
-                                chunk["error"].get("message", "Input context exhausted")
+                                error.get("message", "Input context exhausted")
+                                if isinstance(error, dict)
+                                else "Input context exhausted"
                             )
-                        if (
-                            isinstance(chunk["error"], dict)
-                            and chunk["error"].get("code") == "EMPTY_UPSTREAM_RESPONSE"
-                        ):
+                        if code == "EMPTY_UPSTREAM_RESPONSE":
                             raise EmptyResponseError(
-                                "Router error: " + str(chunk["error"]), evidence()
+                                "Router error: " + str(error or code), evidence()
                             )
-                        raise RuntimeError("Router error: " + str(chunk["error"]))
+                        raise router_error(None, chunk, target=target, stream=True)
                     for choice in chunk.get("choices", []):
                         finish = choice.get("finish_reason") or finish
                         delta = choice.get("delta", {})

@@ -105,7 +105,12 @@ def main(root):
         diagnostics = output_diagnostics(r)
         detail = ""
         failure_kind = None
-        if diagnostics["output_exhausted"] or not diagnostics["answer_chars"]:
+        if r.get("failure_kind") == "context_exhausted":
+            # The router rejected this item (context_length_exceeded).
+            passed = False
+            failure_kind = "context_exhausted"
+            detail = r.get("error") or "Request did not fit the context window"
+        elif diagnostics["output_exhausted"] or not diagnostics["answer_chars"]:
             passed = False
             failure_kind = diagnostics["failure_kind"]
             detail = ("Output budget exhausted" if diagnostics["output_exhausted"] else "No final answer")
@@ -133,7 +138,7 @@ def main(root):
                 "id": task["id"],
                 "language": task["language"],
                 "status": "passed" if passed else "failed",
-                "duration": r["duration"],
+                "duration": r.get("duration"),
                 **{k: r[k] for k in (
                     "timing_version", "ttft_ms", "ttfa_ms", "first_output_ms",
                     "last_output_ms", "completion_ms", "elapsed_seconds",
@@ -141,8 +146,8 @@ def main(root):
                 ) if k in r},
                 "detail": detail
                 or ("All tests passed" if passed else "Executable tests failed"),
-                "usage": r["usage"],
-                "finish_reason": r["finish_reason"],
+                "usage": r.get("usage"),
+                "finish_reason": r.get("finish_reason"),
                 "diagnostics": diagnostics,
                 "failure_kind": failure_kind,
             }

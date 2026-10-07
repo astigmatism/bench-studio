@@ -24,6 +24,9 @@ from .router_stream import completion, ContextBudgetError
 
 class RouterLLM(BaseLLM):
     infrastructure_errors = {}
+    # Classified router failures (offline, switching, identity change) by model,
+    # so the job reports a failed or invalid run rather than a generic error.
+    router_failures = {}
 
     async def call(self, *args, **kwargs):
         try:
@@ -33,7 +36,13 @@ class RouterLLM(BaseLLM):
         except (OutputLengthExceededError, ContextLengthExceededError):
             raise
         except Exception as exc:
-            self.infrastructure_errors.setdefault(self.model, []).append(str(exc))
+            from common import error_kind, error_message
+
+            self.infrastructure_errors.setdefault(self.model, []).append(error_message(exc))
+            if error_kind(exc):
+                self.router_failures.setdefault(self.model, []).append(
+                    (error_kind(exc), error_message(exc))
+                )
             raise
 
     def __init__(self, model_name, api_base, model_info, parameters, evidence_dir=None):
@@ -94,31 +103,47 @@ class RouterLLM(BaseLLM):
             **self.parameters,
             **kwargs,
         }
-        if os.environ.get("BENCH_STUDIO_MANIFEST"):
-            from common import read_json, wait_for_runtime
+        from common import RouterSwitching
 
-            manifest = read_json(os.environ["BENCH_STUDIO_MANIFEST"])
-            target = next(
-                t
-                for t, value in manifest["resolved"].items()
-                if value["canonical"] == self.model
-            )
-            await asyncio.to_thread(
-                wait_for_runtime,
-                manifest["settings"],
-                target,
-                manifest["resolved"][target],
-            )
+        async def ready():
+            if os.environ.get("BENCH_STUDIO_MANIFEST"):
+                from common import read_json, wait_for_runtime
+
+                manifest = read_json(os.environ["BENCH_STUDIO_MANIFEST"])
+                target = next(
+                    t
+                    for t, value in manifest["resolved"].items()
+                    if value["canonical"] == self.model
+                )
+                await asyncio.to_thread(
+                    wait_for_runtime,
+                    manifest["settings"],
+                    target,
+                    manifest["resolved"][target],
+                )
+
+        await ready()
         print(self.model, "request started; input messages", len(messages), flush=True)
         started = time.monotonic()
         try:
-            result = await completion(
-                self.endpoint,
-                payload,
-                progress=lambda n: print(
-                    self.model, "generating:", n, "characters received", flush=True
-                ),
-            )
+            while True:
+                try:
+                    result = await completion(
+                        self.endpoint,
+                        payload,
+                        progress=lambda n: print(
+                            self.model, "generating:", n, "characters received", flush=True
+                        ),
+                    )
+                    break
+                except RouterSwitching as exc:
+                    # Refused while the router drained; nothing was generated.
+                    # Wait for the switch, then resend to the same pinned model.
+                    if not exc.rejected:
+                        raise
+                    print(self.model, "router switching; waiting before resending", flush=True)
+                    await ready()
+                    started = time.monotonic()
         except BaseException as exc:
             self.save_measurement(
                 {
